@@ -1,0 +1,17 @@
+{
+  "name": "debate-battle",
+  "description": "Multi-agent debate battles and lean adversarial review for Claude Code.",
+  "owner": {
+    "name": "Tyson Brown"
+  },
+  "plugins": [
+    {
+      "name": "debate-battle",
+      "source": "./",
+      "description": "Multi-agent debate battles that fight LLM sycophancy. Agents with incompatible reasoning frameworks argue through an event-sourced stream, fact-checked in real time, judged independently, watchable live in your browser.",
+      "version": "1.0.0",
+      "homepage": "https://github.com/utilitydelta/debate-battle",
+      "license": "MIT"
+    }
+  ]
+}

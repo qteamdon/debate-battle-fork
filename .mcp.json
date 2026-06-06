@@ -1,0 +1,11 @@
+{
+  "debate-events": {
+    "command": "uv",
+    "args": [
+      "run",
+      "--directory",
+      "${CLAUDE_PLUGIN_ROOT}/debate-event-store",
+      "debate-event-store"
+    ]
+  }
+}

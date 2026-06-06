@@ -1,0 +1,150 @@
+# debate-battle
+
+Real-time multi-agent debate for Claude Code. Event-sourced, fact-checked in-flight, independently judged, and watchable live in your browser.
+
+## The Problem
+
+LLMs are sycophants. Ask one to brainstorm and it validates everything. Ask it to critique and it pulls punches. Ask it to play devil's advocate and it builds a straw man just to knock it down for you. Every idea is a good idea. AI psychosis ensues.
+
+This isn't a prompting problem. It's a training problem. Models optimise for human preference, and humans prefer agreement. Single-agent ideation is an echo chamber with better grammar.
+
+You can't prompt your way out of a reward function.
+
+## The Fix
+
+Don't ask one model to disagree with itself. Spawn six agents with incompatible reasoning frameworks, force them to argue through a shared append-only event stream, fact-check them in real time, and let an independent judge rank what survives.
+
+Disagreement has to be structural, not prompted. An empiricist and a rationalist reach different conclusions from the same evidence because their frameworks are incompatible, not because one was told to be contrarian.
+
+## Install
+
+Inside Claude Code:
+
+```
+/plugin marketplace add utilitydelta/debate-battle
+/plugin install debate-battle@debate-battle
+```
+
+Requires [uv](https://docs.astral.sh/uv/) on your PATH. The plugin registers the bundled MCP event store automatically; the web UI ships pre-built, no Node toolchain needed.
+
+You get two skills:
+
+| Skill | What it does | Cost |
+|---|---|---|
+| `/debate-battle:debate` | The full battle. 2-10 debaters, strawman researcher, blind-spot finder, live visualization, judge | ~12-20x single agent |
+| `/debate-battle:lean` | Adversarial review. One analyst drafts, two blind reviewers attack, a fresh reviser integrates. Files only | ~3-5x single agent |
+
+Start one:
+
+```
+/debate-battle:debate Should we migrate the monolith to microservices? Materials in ./docs
+```
+
+Open http://127.0.0.1:8770 before the agents start publishing. Watch.
+
+No topic handy? Populate every UI panel with a canned debate:
+
+```bash
+cd debate-event-store
+uv run python scripts/ui_demo.py
+```
+
+## Does It Actually Work?
+
+Tested against a single-agent baseline on the same topics with the same materials. Three experiments, n=3, so treat this as suggestive rather than conclusive. Full writeup in [`docs/lean-mode-findings.md`](docs/lean-mode-findings.md).
+
+**Open-research topics: yes, decisively.** Evaluating a surf-school business pitch, the debate's strawman researcher found that Surf Life Saving Queensland already runs the same product for free, state-wide. That one fact falsified the pitch's load-bearing "nobody is chasing this market" claim and demolished the debate's only conditional-GO position. The single-agent baseline ran web searches too and missed it, because it was scanning commercial competitors, not government programs.
+
+**Structured-evidence topics: roughly a tie.** Analysing a draft e-bike bill where every source document was on disk, debate and baseline reached the same verdict. The debate produced sharper framings; the baseline produced a more deployable memo. When the materials are complete, one agent is usually enough.
+
+**The surprise: lean review beat the full debate on its own turf.** Re-running the surf-school evaluation, the four-agent lean pipeline found a killshot neither the full debate nor the baseline surfaced: the council's surf-school permit window was closed for 14 months, so the founder couldn't legally operate at all. Attacking a static draft turns out to be sharper than fact-checking a moving stream, because a reviewer can interrogate what the draft *assumed*, not just what agents *claimed*. At ~26% of the full debate's token cost. One run, so hold it loosely.
+
+So: reach for `lean` when you need a deployable recommendation pressure-tested. Reach for `debate` when the framing itself is contested and you want disagreement exposed and preserved, not resolved away.
+
+## How a Debate Runs
+
+The orchestrator parses your topic, builds a roster, and spawns everything in parallel:
+
+- **Debaters** (2-10, default 6) in epistemic tension pairs: empiricist vs rationalist, precautionary vs accelerationist, consequentialist vs deontologist, practitioner vs systems-thinker. Plus a frame-challenger whose whole job is attacking the premise of the debate itself.
+- **Strawman researcher.** The grounding layer. Pre-researches the topic, then monitors the stream and publishes `GROUNDING:` events: VERIFIED, DISPUTED, UNSUBSTANTIATED. An agent that keeps pushing a DISPUTED claim is visibly arguing in bad faith, and the judge notices.
+- **Blind-spot finder.** A meta-observer. Every ~10 events it publishes one critique naming what both sides of the dominant tension are taking for granted.
+- **Summariser.** Feeds the live UI's "Haiku Mind" panel through a side channel the debaters never see.
+- **Timer.** Publishes warnings at 33%, 66%, 85%, and time-up.
+
+Roles get different models on purpose. Same model plus opposing frameworks produces stylistically similar arguments. Different models plus opposing frameworks produces real disagreement.
+
+Agents never see the roster. Each one gets only its own briefing and discovers the others' frameworks by reading POSITIONs as they land. Telling an agent who its rival is would script the disagreement instead of letting it emerge.
+
+When time is up, a collector reaps the background agents and a judge reads the full transcript, scores process compliance, ranks the positions, and pushes the verdict to the browser.
+
+## The Hard Rules
+
+Naive multi-agent debates converge by event 30 and spend the remaining 60 events relabelling the same consensus. The orchestration is engineered against that failure mode:
+
+1. **Falsification on POSITION.** Every position must state what evidence would kill it. A position without an escape hatch is a belief, not an argument.
+2. **Steelman before rebuttal.** Every REBUTTAL opens with the strongest version of the target's claim. Strawmanning is a process violation.
+3. **Convergence discipline.** Two agents who notice they agree must publish the disagreement that remains underneath. Surface synthesis is a failure state.
+4. **No unearned "it depends".** Context-dependent positions need a decision rule: if X then Y, else Z.
+5. **Minimum participation.** Publish in every third of the window or the judge ranks you last.
+
+The judge scores rule compliance, framework fidelity, and grounding engagement. Not persuasiveness. It judges from a bias-redacted roster, with an optional two-pass mode that scores argument merit on anonymised events before deanonymising for process compliance.
+
+## Two Debate Modes
+
+| Mode | Divergence axis | When |
+|---|---|---|
+| `epistemic` (default) | Reasoning framework | Technical, scientific, evidence-heavy topics |
+| `dnd` | D&D moral alignment as load-bearing identity | Ethics, policy, values. The fight is over what should be done, not what the evidence says |
+
+In `dnd` mode the alignments argue from their values: Lawful Good cites consensus and protects the vulnerable, Chaotic Neutral defends whichever side is underdefended, Lawful Evil finds the lever and pulls it. Axis-contrast pairs (LG vs CN, NG vs NE) produce sharper debate than cartoon opposites.
+
+In `epistemic` mode a random alignment is still rolled per debater, but as rhetorical posture only. It colours how the agent argues, not what it argues for. Keeps the stream from reading like a methodology lecture.
+
+## The Live UI
+
+The orchestrator starts an embedded FastAPI + SSE server on 127.0.0.1:8770. Loopback only.
+
+- **Momentum timeline.** The centerpiece. Who's pulling ahead, takedowns marked with ⚡ as they land, replay scrubber.
+- **Position graph.** Live force-directed map of conflicts and coalitions. Momentum is node mass; concedes snap nodes together.
+- **Haiku Mind.** The current tide in a few sentences, regenerated live, plus a strawman fact-check feed.
+- **Drill-down.** Click an agent for their full timeline plus a quality scorecard: did they steelman, did they engage groundings.
+- **Moderator inject.** The one write surface. Steer the debate mid-flight; agents see your event on their next catch-up.
+- **Results overlay.** Final rankings and the judge's verdict, pushed live when judging completes.
+
+Architecture notes in [`docs/architecture.md`](docs/architecture.md).
+
+## Why an Event Store
+
+Debates are sequential and adversarial. Event sourcing buys four things:
+
+- **Immutability.** A published argument can't be quietly revised. Sycophantic drift leaves a trail.
+- **Total ordering.** The judge reconstructs not just what was argued but when, and which rebuttals landed.
+- **Per-agent cursors.** Agents catch up at their own pace and never re-read their own events. Context windows stay small.
+- **Replayability.** One log feeds every post-hoc analysis: momentum scoring, position drift, consensus velocity.
+
+The store is in-memory, single-process, behind one asyncio lock. Debates produce hundreds of events, not millions. Optimising throughput here solves a problem that doesn't exist.
+
+## Repo Layout
+
+| Path | What |
+|---|---|
+| `skills/debate/` | The full-battle orchestrator. This is the product; the store is plumbing |
+| `skills/lean/` | The lean adversarial-review pipeline |
+| `debate-event-store/` | The MCP server: event store, FastAPI + SSE web server, React SPA |
+| `.mcp.json` | Registers the bundled MCP server when the plugin is installed |
+| `docs/` | Architecture and the comparative experiment findings |
+
+## Development
+
+```bash
+cd debate-event-store
+uv venv .venv && source .venv/bin/activate
+uv pip install -e ".[dev]"
+pytest -v
+```
+
+Frontend changes: `npm run build` in `debate-event-store/src/debate_event_store/web/frontend/` (the built bundle is committed so consumers don't need Node).
+
+## License
+
+MIT. See `LICENSE`.

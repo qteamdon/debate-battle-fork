@@ -1,0 +1,69 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "debate-event-store"
+version = "0.1.0"
+description = "An MCP server providing an in-memory event-sourced stream for multi-agent debates"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+authors = [
+    { name = "Tyson Brown" },
+]
+keywords = ["mcp", "debate", "event-sourcing", "agents"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+]
+dependencies = [
+    "mcp>=1.0.0",
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.27",
+    "sse-starlette>=2.0",
+]
+
+[project.scripts]
+debate-event-store = "debate_event_store.server:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/debate_event_store"]
+# Exclude the Vite source tree from the wheel — only the built bundle
+# under web/static/dist/ ships to consumers. The frontend/ tree is dev-only
+# and pulling it in would balloon the wheel by node_modules.
+exclude = [
+    "src/debate_event_store/web/frontend",
+    "src/debate_event_store/web/frontend/**",
+]
+# Force-include the built SPA bundle (committed at web/static/dist/). After
+# changing the frontend, rebuild with
+# `cd src/debate_event_store/web/frontend && npm install && npm run build`
+# before building the wheel — otherwise the wheel ships a stale UI.
+[tool.hatch.build.targets.wheel.force-include]
+"src/debate_event_store/web/static/dist" = "debate_event_store/web/static/dist"
+
+[tool.hatch.build.targets.sdist]
+exclude = [
+    "src/debate_event_store/web/frontend/node_modules",
+    "src/debate_event_store/web/frontend/node_modules/**",
+    "src/debate_event_store/web/static/dist",
+    "src/debate_event_store/web/static/dist/**",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-asyncio>=0.21",
+    "httpx>=0.27",
+]
