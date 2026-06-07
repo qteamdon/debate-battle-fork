@@ -3,6 +3,7 @@ import type {
   DebateStatus,
   EventListResponse,
   ModeratorResponse,
+  ResultsResponse,
 } from "./wireTypes";
 
 export const TOKEN_DebateApi = Symbol("DebateApi");
@@ -30,5 +31,11 @@ export class DebateApi {
       body: JSON.stringify({ text }),
     });
     return (await r.json()) as ModeratorResponse;
+  }
+
+  async results(): Promise<ResultsResponse> {
+    const r = await fetch("/api/results");
+    if (!r.ok) throw new Error(`status ${r.status}`);
+    return (await r.json()) as ResultsResponse;
   }
 }

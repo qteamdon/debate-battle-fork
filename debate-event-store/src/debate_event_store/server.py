@@ -78,14 +78,6 @@ async def list_tools() -> list[Tool]:
             },
         ),
         Tool(
-            name="debate_get_all_events",
-            description="Get the complete event stream. Intended for the orchestrator at the end of the debate.",
-            inputSchema={
-                "type": "object",
-                "properties": {},
-            },
-        ),
-        Tool(
             name="debate_dump_markdown",
             description="Write the full debate transcript as a formatted markdown file to disk. Returns the file path.",
             inputSchema={
@@ -97,6 +89,49 @@ async def list_tools() -> list[Tool]:
                     },
                 },
                 "required": ["output_path"],
+            },
+        ),
+        Tool(
+            name="debate_set_final_position",
+            description=(
+                "Store an agent's final position synthesis (post-convergence) "
+                "for display in the Results overlay. The initial POSITION "
+                "event is the agent's opening claim; this carries where they "
+                "actually ended up after rebuttals, concessions, and "
+                "convergence. Markdown is rendered as-is. Cleared on reset."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "agent_id": {
+                        "type": "string",
+                        "description": "The agent_id this final position belongs to.",
+                    },
+                    "markdown": {
+                        "type": "string",
+                        "description": "The agent's final position as markdown.",
+                    },
+                },
+                "required": ["agent_id", "markdown"],
+            },
+        ),
+        Tool(
+            name="debate_set_verdict",
+            description=(
+                "Store the judge's final verdict in-memory alongside the event stream. "
+                "Broadcasts a `verdict` SSE envelope to the visualisation so the "
+                "results view updates without any disk roundtrip. Replaces any "
+                "previously-set verdict for the current debate; cleared on reset."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "markdown": {
+                        "type": "string",
+                        "description": "The verdict as markdown text. Rendered as-is in the results overlay.",
+                    },
+                },
+                "required": ["markdown"],
             },
         ),
         Tool(
@@ -190,10 +225,14 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         result = await store.catch_up(arguments["agent_id"])
     elif name == "debate_status":
         result = await store.status()
-    elif name == "debate_get_all_events":
-        result = await store.get_all_events()
     elif name == "debate_dump_markdown":
         result = await store.dump_markdown(arguments["output_path"])
+    elif name == "debate_set_final_position":
+        result = await store.set_final_position(
+            arguments["agent_id"], arguments["markdown"]
+        )
+    elif name == "debate_set_verdict":
+        result = await store.set_verdict(arguments["markdown"])
     elif name == "debate_reset":
         limit = arguments.get("per_agent_event_limit", 200)
         result = await store.reset(limit)

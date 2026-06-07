@@ -57,18 +57,12 @@ async def test_tool_status():
 
 
 @pytest.mark.asyncio
-async def test_tool_get_all_events():
-    await call_tool("debate_catch_up", {"agent_id": "frank"})
-    await call_tool("debate_publish", {
-        "agent_id": "frank",
-        "text": "POSITION: MIT",
-    })
-
+async def test_tool_get_all_events_removed():
+    """debate_get_all_events was removed; dispatch should fail."""
     result = await call_tool("debate_get_all_events", {})
     data = json.loads(result[0].text)
-    assert data["tip"] == 1
-    assert data["event_count"] == 1
-    assert "POSITION: MIT" in data["events_markdown"]
+    assert "error" in data
+    assert "Unknown tool" in data["error"]
 
 
 @pytest.mark.asyncio

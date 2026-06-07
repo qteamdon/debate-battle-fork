@@ -64,6 +64,13 @@ export class MomentumStore {
       _lastSeenPosition: false,
     });
     autorun(() => {
+      // See PositionGraphStore for the rationale: read `_stream.tip` (a
+      // primitive that increments on every push) so MobX reliably invalidates
+      // this autorun when a new event lands. Tracking the array reference
+      // alone is not enough — push() mutates in place and doesn't fire the
+      // field-access atom.
+      const _tip = this._stream.tip;
+      void _tip;
       const events = this._stream.events;
       runInAction(() => this._catchUp(events));
     });

@@ -70,14 +70,20 @@ export const EventStreamView = observer(() => {
   const filters = useResolve<FiltersStore>(TOKEN_FiltersStore);
   const timelineView = useResolve<TimelineViewStore>(TOKEN_TimelineViewStore);
   const listRef = useRef<HTMLUListElement | null>(null);
+  // Pinned by a click on a takedown / tick / event in another view. While
+  // pinned, new events do NOT yank the scroll back to the top — that was
+  // making the click navigation unusable because the next live event would
+  // immediately steal the operator's spot. Cleared when the user scrolls
+  // back to (or near) the top of the list themselves.
+  const pinnedRef = useRef(false);
 
   const visible = store.eventsNewestFirst.filter((e) => filters.passes(e));
   const topPos = visible.length > 0 ? visible[0].position : 0;
 
   useEffect(() => {
-    if (filters.autoScroll && listRef.current) {
-      listRef.current.scrollTop = 0;
-    }
+    if (!filters.autoScroll) return;
+    if (pinnedRef.current) return;
+    if (listRef.current) listRef.current.scrollTop = 0;
   }, [topPos, filters.autoScroll]);
 
   const focusPos = timelineView.focusedStreamPosition;
@@ -89,12 +95,24 @@ export const EventStreamView = observer(() => {
       `li[data-position="${focusPos}"]`,
     ) as HTMLElement | null;
     if (target) {
+      pinnedRef.current = true;
       target.scrollIntoView({ behavior: "smooth", block: "center" });
       target.classList.add("event-stream__item--focused");
       window.setTimeout(() => target.classList.remove("event-stream__item--focused"), 1500);
     }
     timelineView.clearStreamScrollRequest();
   }, [focusPos, timelineView]);
+
+  // Releasing the pin: when the user scrolls back near the top, autoscroll
+  // resumes. 24px of slack so a fractional scrollTop after a momentum scroll
+  // doesn't leave us stuck pinned.
+  const onScroll = () => {
+    const list = listRef.current;
+    if (!list) return;
+    if (pinnedRef.current && list.scrollTop <= 24) {
+      pinnedRef.current = false;
+    }
+  };
 
   return (
     <div className="event-stream">
@@ -108,7 +126,7 @@ export const EventStreamView = observer(() => {
           <span className="event-stream__tip">tip: {store.tip}</span>
         </span>
       </div>
-      <ul ref={listRef} className="event-stream__list">
+      <ul ref={listRef} onScroll={onScroll} className="event-stream__list">
         {visible.map((e) => (
           <EventItem key={e.position} event={e} />
         ))}

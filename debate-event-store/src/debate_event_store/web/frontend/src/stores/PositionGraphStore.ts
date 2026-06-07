@@ -37,13 +37,20 @@ export interface EdgeState {
   mostRecentPosition: number;
 }
 
-// Age decay window: edges weaken with exp(-age/AGE_TAU_SEC). 60s half-life is
-// gentle enough that a debate exchange remains visible while the simulation
+// Age decay window: edges weaken with exp(-age/AGE_TAU_SEC). A 5-minute tau
+// keeps a typical debate's worth of exchanges visible while the simulation
 // loses interest in stale connections. Anything below MIN_WEIGHT is dropped
 // from the link force so the layout settles around current activity.
-const AGE_TAU_SEC = 60;
+//
+// HARD_AGE_LIMIT_SEC is the absolute cutoff before an event is ignored. The
+// previous value (120s) silently emptied the graph mid-debate as soon as any
+// debate ran longer than two minutes — every edge dropped, and with no link
+// forces the six nodes collapsed onto the centring point and looked invisible.
+// One hour is comfortably longer than any realistic debate; MIN_WEIGHT cuts
+// genuinely stale edges before the limit ever matters.
+const AGE_TAU_SEC = 300;
 const MIN_WEIGHT = 0.05;
-const HARD_AGE_LIMIT_SEC = 120;
+const HARD_AGE_LIMIT_SEC = 3600;
 
 // Node radius scaling: 8 minimum so labels remain legible; 26 cap so a hot
 // node doesn't blow past the 300x280 viewport.
@@ -82,7 +89,17 @@ export class PositionGraphStore {
     });
     this._sim.onTick((positions) => this._applyPositions(positions));
     this._autorunDisposer = autorun(() => {
-      // Read both observables so MobX tracks them.
+      // Read `_stream.tip` (a primitive that increments on every push) to
+      // force a dependency MobX will reliably invalidate on. Reading
+      // `_stream.events` alone tracks the field-access atom, which does NOT
+      // fire when `applyEvent` mutates the array in place via push() — the
+      // array reference is unchanged. The EventStream view doesn't hit this
+      // bug because it reads `.length` and `events[i]` directly in observer
+      // scope; this autorun would have to do the same, except the actual
+      // iteration happens inside a nested `runInAction` (where tracking is
+      // weaker). Tracking `tip` here is the simplest stable signal.
+      const _tip = this._stream.tip;
+      void _tip;
       const events = this._stream.events;
       const scores = this._momentum.currentScores;
       runInAction(() => this._rebuild(events, scores));

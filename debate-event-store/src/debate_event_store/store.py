@@ -51,14 +51,37 @@ class EventStore:
         self._agent_positions: dict[str, int] = {}
         self._agent_publish_counts: dict[str, int] = {}
         self._per_agent_event_limit: int = 200
+        # The judge's final verdict, stored alongside the event stream so the
+        # browser/MCP layer doesn't have to chase a file on disk whose location
+        # depends on whichever cwd the orchestrator happens to be running from.
+        self._verdict_markdown: str | None = None
+        # Per-agent final positions written by the judge after reading state
+        # files. The initial POSITION event in the stream is the agent's
+        # opening claim; this map carries the *final* synthesis (after
+        # convergence, concessions, etc.) so the Results view shows where
+        # each agent actually ended up rather than where they started.
+        self._final_positions: dict[str, str] = {}
         self._on_event_published = on_event_published
         self._on_reset = on_reset
+        self._on_verdict_set: Callable[[str], None] | None = None
 
     def set_on_event_published(self, callback: Callable[[Event], None] | None) -> None:
         self._on_event_published = callback
 
     def set_on_reset(self, callback: Callable[[dict], None] | None) -> None:
         self._on_reset = callback
+
+    def set_on_verdict_set(self, callback: Callable[[str], None] | None) -> None:
+        self._on_verdict_set = callback
+
+    @property
+    def verdict_markdown(self) -> str | None:
+        return self._verdict_markdown
+
+    @property
+    def final_positions(self) -> dict[str, str]:
+        # Shallow copy so callers can't mutate our internal state.
+        return dict(self._final_positions)
 
     @property
     def per_agent_event_limit(self) -> int:
@@ -248,6 +271,8 @@ class EventStore:
             self._agent_positions.clear()
             self._agent_publish_counts.clear()
             self._per_agent_event_limit = per_agent_event_limit
+            self._verdict_markdown = None
+            self._final_positions.clear()
             result = {
                 "success": True,
                 "per_agent_event_limit": per_agent_event_limit,
@@ -260,6 +285,41 @@ class EventStore:
                 pass
 
         return result
+
+    async def set_final_position(self, agent_id: str, markdown: str) -> dict:
+        """Store an agent's *final* position synthesis (post-convergence).
+
+        Called by the judge after reading the agent's state file. The initial
+        POSITION event in the stream is the agent's opening claim; this map
+        carries where they actually ended up. Cleared on reset.
+        """
+        if not isinstance(agent_id, str) or not agent_id:
+            return {"success": False, "error": "agent_id_required"}
+        if not isinstance(markdown, str):
+            return {"success": False, "error": "markdown_not_string"}
+        async with self._lock:
+            self._final_positions[agent_id] = markdown
+        return {"success": True, "agent_id": agent_id, "length": len(markdown)}
+
+    async def set_verdict(self, markdown: str) -> dict:
+        """Store the judge's final verdict in-memory alongside the event stream.
+
+        The web layer broadcasts a `verdict` SSE envelope so the results view
+        updates without any disk roundtrip. Disk persistence is the caller's
+        problem — this store deliberately does not write the verdict to a file.
+        """
+        if not isinstance(markdown, str):
+            return {"success": False, "error": "markdown_not_string"}
+        async with self._lock:
+            self._verdict_markdown = markdown
+
+        if self._on_verdict_set is not None:
+            try:
+                self._on_verdict_set(markdown)
+            except Exception:
+                pass
+
+        return {"success": True, "length": len(markdown)}
 
     async def get_recent(self, since: int = 0) -> list[dict]:
         """Return events with position > since as plain dicts.

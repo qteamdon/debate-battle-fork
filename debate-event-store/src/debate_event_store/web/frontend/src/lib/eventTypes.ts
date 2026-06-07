@@ -22,16 +22,21 @@ export const ALL_EVENT_TYPES: readonly EventType[] = [
   "MODERATOR",
 ];
 
+// Use word-boundary anchors uniformly. Agents commonly address events as
+// "CONVERGENCE @bob: ..." or "GROUNDING @alice: ..." — a colon-anchored
+// regex misses those entirely and every such event falls to OTHER, which
+// means no score delta and no edge in the position graph. Word boundary
+// matches both "KEYWORD:" and "KEYWORD @name:" / "KEYWORD " forms.
 const PATTERNS: Array<[EventType, RegExp]> = [
-  ["POSITION", /^POSITION:/],
-  ["ARGUMENT", /^ARGUMENT:/],
+  ["POSITION", /^POSITION\b/],
+  ["ARGUMENT", /^ARGUMENT\b/],
   ["REBUTTAL", /^REBUTTAL\b/],
   ["CONCEDE", /^CONCEDE\b/],
   ["CRITIQUE", /^CRITIQUE\b/],
-  ["CONVERGENCE", /^CONVERGENCE:/],
-  ["GROUNDING", /^GROUNDING:/],
-  ["ROLE", /^ROLE:/],
-  ["MODERATOR", /^MODERATOR:/],
+  ["CONVERGENCE", /^CONVERGENCE\b/],
+  ["GROUNDING", /^GROUNDING\b/],
+  ["ROLE", /^ROLE\b/],
+  ["MODERATOR", /^MODERATOR\b/],
 ];
 
 export function eventType(text: string): EventType {

@@ -89,10 +89,32 @@ export const TimelineView = observer(() => {
     () => (events.length > 0 ? events[0].timestamp * 1000 : effectiveNowMs - 60000),
     [events, effectiveNowMs],
   );
+  // Auto-fit the visible window to the debate's actual span. The configured
+  // `visibleWindowSeconds` (default 120) is the FLOOR — when a debate runs
+  // longer, we expand to cover the full data plus a small live headroom on
+  // the right, otherwise events older than the floor get trimmed off the
+  // left and the operator sees a half-empty chart with everyone bunched at
+  // the right edge. Headroom keeps the latest event visibly inside the plot
+  // rather than pinned to the right margin.
+  const headroomMs = Math.max(30000, view.visibleWindowSeconds * 250);
+  const dataSpanMs = events.length > 0 ? Math.max(0, lastEventMs - firstEventMs) : 0;
+  const windowMs = Math.max(
+    view.visibleWindowSeconds * 1000,
+    dataSpanMs + headroomMs,
+  );
+  // Once the debate ends, the 250ms heartbeat would otherwise slide the chart
+  // forward indefinitely on wall-clock time, eventually pushing every event
+  // off the left edge and leaving the operator with an empty plot (and a
+  // scrubber thumb wiggling at the right edge as `nowMs` ticks past stale
+  // `firstEventMs`). Once events exist, cap the live right-edge at the
+  // headroom past `lastEventMs` — enough to feel live when a new event lands,
+  // but the latest event stays comfortably visible.
+  const liveRightEdgeMs = events.length > 0
+    ? Math.min(effectiveNowMs, lastEventMs + headroomMs)
+    : effectiveNowMs;
   const rightEdgeMs = view.isLive
-    ? effectiveNowMs
+    ? liveRightEdgeMs
     : (view.scrubberPosition ?? effectiveNowMs);
-  const windowMs = view.visibleWindowSeconds * 1000;
   const leftEdgeMs = rightEdgeMs - windowMs;
 
   const innerW = Math.max(50, width - MARGIN.left - MARGIN.right);
@@ -170,21 +192,40 @@ export const TimelineView = observer(() => {
           ))}
           {/* zero baseline */}
           <line x1={0} x2={innerW} y1={yZero} y2={yZero} stroke="#3a4150" strokeWidth={1} />
-          {/* x axis minute ticks: from leftEdge to rightEdge, label "-Xm" */}
-          {[120, 90, 60, 30, 0].map((secAgo) => {
-            const tMs = rightEdgeMs - secAgo * 1000;
-            if (tMs < leftEdgeMs) return null;
-            const x = xScale(tMs);
-            const label = secAgo === 0 ? "now" : `-${Math.round(secAgo / 60)}m`;
-            return (
-              <g key={`x-${secAgo}`}>
-                <line x1={x} x2={x} y1={innerH} y2={innerH + 4} stroke="#2c3140" />
-                <text x={x} y={innerH + 16} fill="#5a6275" fontSize={10} textAnchor="middle">
-                  {label}
-                </text>
-              </g>
-            );
-          })}
+          {/* x axis ticks: step-size adapts to window so labels neither
+              overlap nor disappear, and labels handle sub-minute spans
+              ("-30s") instead of rounding 30s to "-1m" and 90s to "-2m"
+              (which makes two adjacent ticks both read "-2m"). */}
+          {(() => {
+            const windowSec = Math.max(1, Math.round(windowMs / 1000));
+            const stepCandidates = [10, 15, 30, 60, 120, 300, 600, 1800, 3600];
+            const targetTicks = 5;
+            const tickStepSec = stepCandidates.find(
+              (s) => windowSec / s <= targetTicks + 0.5,
+            ) ?? 3600;
+            const ticks: number[] = [];
+            for (let s = 0; s <= windowSec; s += tickStepSec) ticks.push(s);
+            const fmt = (secAgo: number): string => {
+              if (secAgo === 0) return "now";
+              if (secAgo < 60) return `-${secAgo}s`;
+              const m = Math.floor(secAgo / 60);
+              const s = secAgo % 60;
+              return s === 0 ? `-${m}m` : `-${m}m${s.toString().padStart(2, "0")}s`;
+            };
+            return ticks.map((secAgo) => {
+              const tMs = rightEdgeMs - secAgo * 1000;
+              if (tMs < leftEdgeMs) return null;
+              const x = xScale(tMs);
+              return (
+                <g key={`x-${secAgo}`}>
+                  <line x1={x} x2={x} y1={innerH} y2={innerH + 4} stroke="#2c3140" />
+                  <text x={x} y={innerH + 16} fill="#5a6275" fontSize={10} textAnchor="middle">
+                    {fmt(secAgo)}
+                  </text>
+                </g>
+              );
+            });
+          })()}
           {/* y axis labels */}
           {yScale.ticks(5).map((v: number) => (
             <text
@@ -280,7 +321,10 @@ export const TimelineView = observer(() => {
         </g>
       </svg>
 
-      <ScrubberView firstEventMs={firstEventMs} nowMs={effectiveNowMs} />
+      {/* Scrubber's `nowMs` defines its max-value. Pass the capped live-edge
+          (not the unbounded wall clock) so the thumb stops creeping right
+          once the debate ends — same anchor logic as the chart. */}
+      <ScrubberView firstEventMs={firstEventMs} nowMs={liveRightEdgeMs} />
 
       {tickHover && (() => {
         const e = eventByPosition.get(tickHover.eventPosition);

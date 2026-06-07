@@ -33,6 +33,15 @@ export class AgentRosterStore {
   }
 
   get agents(): ReadonlyMap<string, AgentState> {
+    // Two-pass: first pass records every actual publisher (agents who emit
+    // events). Second pass counts incoming-mentions but ONLY for agents we
+    // already know publish — otherwise stray `@word` tokens in event text
+    // (e.g. `@Entire`, `@Debate`, `@Name`) get promoted to spurious agents
+    // and clutter the rail. The mention regex is `/@([a-zA-Z][a-zA-Z0-9_]*)/`
+    // which has no way to distinguish "agent reference" from "ordinary
+    // English word that happens to follow an @". The roster is the right
+    // place to enforce that distinction: an agent is someone who publishes,
+    // not someone who is named.
     const map = new Map<string, AgentState>();
     for (const e of this._stream.events) {
       const id = e.agent_id;
@@ -55,24 +64,18 @@ export class AgentRosterStore {
       state.typeCounts[t] = (state.typeCounts[t] ?? 0) + 1;
       if (e.timestamp > state.lastEventAt) state.lastEventAt = e.timestamp;
       if (e.position > state.lastEventPosition) state.lastEventPosition = e.position;
+    }
+    // Second pass: mentions, but only crediting them to already-known agents.
+    for (const e of this._stream.events) {
+      const id = e.agent_id;
+      const state = map.get(id);
+      if (!state) continue;
       const mentioned = mentionsOf(e.text);
-      state.mentionsOut += mentioned.length;
       for (const target of mentioned) {
         if (target === id) continue;
-        let other = map.get(target);
-        if (!other) {
-          other = {
-            agent_id: target,
-            eventCount: 0,
-            typeCounts: {},
-            firstSeenAt: e.timestamp,
-            lastEventAt: e.timestamp,
-            lastEventPosition: 0,
-            mentionsIn: 0,
-            mentionsOut: 0,
-          };
-          map.set(target, other);
-        }
+        const other = map.get(target);
+        if (!other) continue;
+        state.mentionsOut += 1;
         other.mentionsIn += 1;
       }
     }
@@ -125,27 +128,17 @@ export class AgentRosterStore {
     return pairs.slice(0, 3);
   }
 
-  // Groups agents into tension-pair clusters plus a trailing "others" bucket.
-  // If no tension pairs detected, returns a single flat group.
+  // Flat list of unique agents in first-seen order. We dropped the
+  // tension-pair grouping because (a) every agent who rebuts >=2 others
+  // appeared in multiple groups (e.g. "Alice ⇄ Bob" AND "Alice ⇄ Eve"
+  // listed Alice twice) and (b) the dynamic group labels were generated
+  // by extracting words from event text, which produced confusing tags
+  // like "Entire", "Debate", "Name". Inferred tension belongs in the
+  // position graph, not the agents rail. Each agent should appear exactly
+  // once here so the operator can see "who's at the table" at a glance.
   get groups(): ReadonlyArray<{ label: string | null; agentIds: string[] }> {
     const list = this.agentList;
-    const pairs = this.tensionPairs;
-    if (pairs.length === 0) {
-      return [{ label: null, agentIds: list.map((a) => a.agent_id) }];
-    }
-    const claimed = new Set<string>();
-    const out: Array<{ label: string | null; agentIds: string[] }> = [];
-    for (const p of pairs) {
-      const present = p.agentIds.filter((id) => this.agents.has(id));
-      if (present.length === 0) continue;
-      for (const id of present) claimed.add(id);
-      out.push({ label: p.label, agentIds: present });
-    }
-    const others = list
-      .map((a) => a.agent_id)
-      .filter((id) => !claimed.has(id));
-    if (others.length > 0) out.push({ label: "Other", agentIds: others });
-    return out;
+    return [{ label: null, agentIds: list.map((a) => a.agent_id) }];
   }
 
   budgetFor(agent_id: string): { used: number; limit: number } {

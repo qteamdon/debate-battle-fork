@@ -6,6 +6,7 @@ import type {
   SseEnvelope,
   SummaryEnvelope,
   ResetEnvelope,
+  VerdictEnvelope,
 } from "./wireTypes";
 
 export const TOKEN_SseClient = Symbol("SseClient");
@@ -25,10 +26,18 @@ export type {
 @injectable()
 export class SseClient {
   private _source: EventSource | null = null;
-  private _snapshotCbs: Array<(events: DebateEvent[], status: DebateStatus) => void> = [];
+  private _snapshotCbs: Array<
+    (
+    events: DebateEvent[],
+    status: DebateStatus,
+    verdictMarkdown: string | null,
+    finalPositions: Record<string, string>,
+  ) => void
+  > = [];
   private _eventCbs: Array<(e: DebateEvent) => void> = [];
   private _summaryCbs: Array<(s: SummaryEnvelope) => void> = [];
   private _resetCbs: Array<(r: ResetEnvelope) => void> = [];
+  private _verdictCbs: Array<(v: VerdictEnvelope) => void> = [];
   private _stateCbs: Array<(s: ConnectionState) => void> = [];
   private _state: ConnectionState = "closed";
 
@@ -61,7 +70,14 @@ export class SseClient {
     return this._state;
   }
 
-  onSnapshot(cb: (events: DebateEvent[], status: DebateStatus) => void): void {
+  onSnapshot(
+    cb: (
+    events: DebateEvent[],
+    status: DebateStatus,
+    verdictMarkdown: string | null,
+    finalPositions: Record<string, string>,
+  ) => void,
+  ): void {
     this._snapshotCbs.push(cb);
   }
 
@@ -75,6 +91,10 @@ export class SseClient {
 
   onReset(cb: (r: ResetEnvelope) => void): void {
     this._resetCbs.push(cb);
+  }
+
+  onVerdict(cb: (v: VerdictEnvelope) => void): void {
+    this._verdictCbs.push(cb);
   }
 
   onStateChange(cb: (s: ConnectionState) => void): void {
@@ -96,7 +116,13 @@ export class SseClient {
     }
     switch (parsed.type) {
       case "snapshot":
-        for (const cb of this._snapshotCbs) cb(parsed.events, parsed.status);
+        for (const cb of this._snapshotCbs)
+          cb(
+            parsed.events,
+            parsed.status,
+            parsed.verdict_markdown ?? null,
+            parsed.final_positions ?? {},
+          );
         break;
       case "event":
         for (const cb of this._eventCbs) cb(parsed.event);
@@ -106,6 +132,9 @@ export class SseClient {
         break;
       case "reset":
         for (const cb of this._resetCbs) cb(parsed);
+        break;
+      case "verdict":
+        for (const cb of this._verdictCbs) cb(parsed);
         break;
     }
   }

@@ -15,6 +15,8 @@ import { TimelineView } from "@/views/Timeline/TimelineView";
 import { PositionGraphView } from "@/views/PositionGraph/PositionGraphView";
 import { DrillDownOverlay } from "@/views/DrillDown/DrillDownOverlay";
 import { HaikuMindView } from "@/views/HaikuMind/HaikuMindView";
+import { ResultsOverlay } from "@/views/Results/ResultsOverlay";
+import { ResultsStore, TOKEN_ResultsStore } from "@/stores/ResultsStore";
 import {
   ModeratorInputStore,
   TOKEN_ModeratorInputStore,
@@ -25,6 +27,7 @@ export const App = observer(() => {
   const conn = useResolve<ConnectionStore>(TOKEN_ConnectionStore);
   const stream = useResolve<EventStreamStore>(TOKEN_EventStreamStore);
   const moderator = useResolve<ModeratorInputStore>(TOKEN_ModeratorInputStore);
+  const results = useResolve<ResultsStore>(TOKEN_ResultsStore);
 
   useEffect(() => {
     sse.start();
@@ -48,6 +51,15 @@ export const App = observer(() => {
         <h1>Live Debate</h1>
         <div className="app__header-meta">
           {stream.topic && <span className="app__topic">{stream.topic}</span>}
+          <button
+            type="button"
+            className={
+              "app__results-btn" + (results.ended ? " app__results-btn--ready" : "")
+            }
+            onClick={() => results.open()}
+          >
+            {results.ended ? "Results ●" : "Results"}
+          </button>
           <span className={`app__conn app__conn--${conn.state}`}>{conn.state}</span>
         </div>
       </header>
@@ -69,6 +81,7 @@ export const App = observer(() => {
         <ModeratorFooterView />
       </footer>
       <DrillDownOverlay />
+      <ResultsOverlay />
     </div>
   );
 });

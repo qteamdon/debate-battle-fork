@@ -34,6 +34,7 @@ import {
 } from "@/stores/PositionGraphStore";
 import { DrillDownStore, TOKEN_DrillDownStore } from "@/stores/DrillDownStore";
 import { SummaryStore, TOKEN_SummaryStore } from "@/stores/SummaryStore";
+import { ResultsStore, TOKEN_ResultsStore } from "@/stores/ResultsStore";
 
 export function configureContainer(container: DependencyContainer): void {
   container.registerSingleton<SseClient>(TOKEN_SseClient, SseClient);
@@ -73,6 +74,7 @@ export function configureContainer(container: DependencyContainer): void {
   // so resolution happens on first overlay open via useResolve.
   container.registerSingleton<DrillDownStore>(TOKEN_DrillDownStore, DrillDownStore);
   container.registerSingleton<SummaryStore>(TOKEN_SummaryStore, SummaryStore);
+  container.registerSingleton<ResultsStore>(TOKEN_ResultsStore, ResultsStore);
 
   // Eagerly resolve stores that subscribe to SseClient in their constructors so
   // they are listening before start() fires the first snapshot envelope.
@@ -89,4 +91,9 @@ export function configureContainer(container: DependencyContainer): void {
   // envelope arrives — otherwise the panel stays "Awaiting summariser..."
   // even after a real summary has been broadcast.
   container.resolve<SummaryStore>(TOKEN_SummaryStore);
+  // ResultsStore installs an autorun watching the stream for the
+  // "ORCHESTRATOR: Time is up" event so it can auto-open the results
+  // overlay. Resolve early so the watcher is live before that event
+  // arrives on a fresh page.
+  container.resolve<ResultsStore>(TOKEN_ResultsStore);
 }

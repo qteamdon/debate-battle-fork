@@ -40,11 +40,11 @@ export const HaikuMindView = observer(() => {
       }
     >
       <header className="haiku-mind__head">
-        <h3 className="haiku-mind__title">Haiku Mind</h3>
+        <h3 className="haiku-mind__title">Summariser</h3>
         <button
           type="button"
           className="haiku-mind__toggle"
-          aria-label={collapsed ? "Expand Haiku Mind" : "Collapse Haiku Mind"}
+          aria-label={collapsed ? "Expand Summariser" : "Collapse Summariser"}
           aria-expanded={!collapsed}
           onClick={() => setCollapsed((c) => !c)}
         >

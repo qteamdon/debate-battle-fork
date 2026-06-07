@@ -26,6 +26,13 @@ export interface SnapshotEnvelope {
   type: "snapshot";
   events: DebateEvent[];
   status: DebateStatus;
+  verdict_markdown?: string | null;
+  final_positions?: Record<string, string>;
+}
+
+export interface VerdictEnvelope {
+  type: "verdict";
+  markdown: string;
 }
 
 export interface EventEnvelope {
@@ -64,11 +71,26 @@ export type SseEnvelope =
   | SnapshotEnvelope
   | EventEnvelope
   | SummaryEnvelope
-  | ResetEnvelope;
+  | ResetEnvelope
+  | VerdictEnvelope;
 
 export interface ModeratorResponse {
   success: boolean;
   position?: number;
   error?: string;
   [key: string]: unknown;
+}
+
+export interface ResultsPosition {
+  agent_id: string;
+  position: number;
+  text: string;
+  timestamp: number;
+}
+
+export interface ResultsResponse {
+  ended: boolean;
+  positions: ResultsPosition[];
+  final_positions?: Record<string, string>;
+  verdict_markdown: string | null;
 }

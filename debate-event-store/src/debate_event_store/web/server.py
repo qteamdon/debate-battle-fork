@@ -76,12 +76,16 @@ class WebServer:
     def _register_store_hooks(self) -> None:
         self.store.set_on_event_published(self._on_event_published)
         self.store.set_on_reset(self._on_reset)
+        self.store.set_on_verdict_set(self._on_verdict_set)
 
     def _on_event_published(self, event: Event) -> None:
         self.event_bus.publish_event({"type": "event", "event": asdict(event)})
 
     def _on_reset(self, payload: dict) -> None:
         self.event_bus.publish_reset({"type": "reset", **payload})
+
+    def _on_verdict_set(self, markdown: str) -> None:
+        self.event_bus.publish_verdict({"type": "verdict", "markdown": markdown})
 
     # ---- routes ----
 
@@ -100,6 +104,36 @@ class WebServer:
         async def get_events() -> JSONResponse:
             events = await store.list_events()
             return JSONResponse({"tip": store.tip, "events": events})
+
+        @app.get("/api/results")
+        async def get_results() -> JSONResponse:
+            events = await store.list_events()
+            ended = any(
+                isinstance(e.get("text"), str)
+                and e["text"].startswith("ORCHESTRATOR: Time is up")
+                for e in events
+            )
+            seen: set[str] = set()
+            positions: list[dict] = []
+            for e in events:
+                text = e.get("text", "")
+                agent = e.get("agent_id", "")
+                if agent in seen or not isinstance(text, str) or not text.startswith("POSITION"):
+                    continue
+                seen.add(agent)
+                positions.append({
+                    "agent_id": agent,
+                    "position": e.get("position"),
+                    "text": text,
+                    "timestamp": e.get("timestamp"),
+                })
+
+            return JSONResponse({
+                "ended": ended,
+                "positions": positions,
+                "final_positions": store.final_positions,
+                "verdict_markdown": store.verdict_markdown,
+            })
 
         @app.post("/api/moderator")
         async def post_moderator(request: Request) -> JSONResponse:
@@ -130,6 +164,7 @@ class WebServer:
             event_q = bus.subscribe("event")
             summary_q = bus.subscribe("summary")
             reset_q = bus.subscribe("reset")
+            verdict_q = bus.subscribe("verdict")
 
             # Snapshot captured BEFORE any new fan-out reaches our queues.
             # New events that arrive between the snapshot and the first read
@@ -142,15 +177,32 @@ class WebServer:
                 "type": "snapshot",
                 "events": snapshot_events,
                 "status": snapshot_status,
+                # Embed the current verdict in the snapshot so clients that
+                # connect AFTER the judge has fired don't have to wait for the
+                # next push to populate the results overlay.
+                "verdict_markdown": store.verdict_markdown,
+                "final_positions": store.final_positions,
             }
+
+            # Rehydrate the Haiku Mind panel for clients connecting AFTER the
+            # summariser has finished. Without this, the panel sits empty on
+            # page refresh even though summaries were broadcast in real time.
+            # The bus retains the most recent summary envelope; we replay it
+            # right after the events snapshot so SummaryStore ingests it like
+            # any normal summary push.
+            last_summary = bus.last_summary
 
             async def generator():
                 try:
                     yield {"data": json.dumps(snapshot_payload)}
+                    if last_summary is not None:
+                        yield {"data": json.dumps(last_summary)}
                     while True:
                         if await request.is_disconnected():
                             break
-                        envelope = await _next_envelope(event_q, summary_q, reset_q)
+                        envelope = await _next_envelope(
+                            event_q, summary_q, reset_q, verdict_q
+                        )
                         if envelope is None:
                             continue
                         message: dict[str, Any] = {"data": json.dumps(envelope)}
@@ -163,6 +215,7 @@ class WebServer:
                     bus.unsubscribe("event", event_q)
                     bus.unsubscribe("summary", summary_q)
                     bus.unsubscribe("reset", reset_q)
+                    bus.unsubscribe("verdict", verdict_q)
 
             return EventSourceResponse(generator())
 
@@ -280,21 +333,13 @@ class WebServer:
             self.event_bus.attach_loop(None)
 
 
-async def _next_envelope(
-    event_q: asyncio.Queue,
-    summary_q: asyncio.Queue,
-    reset_q: asyncio.Queue,
-) -> dict | None:
-    """Await whichever of the three channel queues fires first.
+async def _next_envelope(*queues: asyncio.Queue) -> dict | None:
+    """Await whichever of the supplied channel queues fires first.
 
     Wakes every second to give the generator a chance to observe client
     disconnect via `request.is_disconnected()`.
     """
-    get_tasks = {
-        asyncio.create_task(event_q.get()): event_q,
-        asyncio.create_task(summary_q.get()): summary_q,
-        asyncio.create_task(reset_q.get()): reset_q,
-    }
+    get_tasks = {asyncio.create_task(q.get()): q for q in queues}
     try:
         done, pending = await asyncio.wait(
             get_tasks.keys(),

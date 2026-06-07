@@ -17,7 +17,7 @@ from typing import Literal
 
 logger = logging.getLogger(__name__)
 
-Channel = Literal["event", "summary", "reset"]
+Channel = Literal["event", "summary", "reset", "verdict"]
 DEFAULT_QUEUE_MAXSIZE = 256
 
 
@@ -29,8 +29,19 @@ class EventBus:
             "event": set(),
             "summary": set(),
             "reset": set(),
+            "verdict": set(),
         }
         self._loop: asyncio.AbstractEventLoop | None = None
+        # Last-known summary, retained so newly-connected clients can rehydrate
+        # the Haiku Mind panel without waiting for the next summariser push.
+        # Without this, refreshing the page after a debate ends leaves the
+        # panel stuck at "Awaiting summariser..." even though summaries were
+        # streamed in real time. Cleared on reset.
+        self._last_summary: dict | None = None
+        # Same rationale for the judge's verdict: a page refresh after the
+        # judge fires should still hydrate the results overlay without forcing
+        # the operator to click "refresh". Cleared on reset.
+        self._last_verdict: dict | None = None
 
     def attach_loop(self, loop: asyncio.AbstractEventLoop) -> None:
         """Bind the uvicorn event loop. Called from the daemon thread once."""
@@ -61,10 +72,28 @@ class EventBus:
         self._schedule("event", payload)
 
     def publish_summary(self, payload: dict) -> None:
+        # Retain for snapshot rehydration on new client connect.
+        self._last_summary = payload
         self._schedule("summary", payload)
 
     def publish_reset(self, payload: dict) -> None:
+        # Drop the cached summary/verdict — they belong to the now-cleared debate.
+        self._last_summary = None
+        self._last_verdict = None
         self._schedule("reset", payload)
+
+    def publish_verdict(self, payload: dict) -> None:
+        # Retain for snapshot rehydration on new client connect.
+        self._last_verdict = payload
+        self._schedule("verdict", payload)
+
+    @property
+    def last_summary(self) -> dict | None:
+        return self._last_summary
+
+    @property
+    def last_verdict(self) -> dict | None:
+        return self._last_verdict
 
     def _schedule(self, channel: Channel, payload: dict) -> None:
         loop = self._loop
