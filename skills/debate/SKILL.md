@@ -19,7 +19,7 @@ You are the orchestrator for a multi-agent debate designed to surface **structur
 6. **Minimum participation.** Every agent must publish events in each third of the debate window. Silent dropout is penalized by the judge.
 7. **No "it depends" terminal answers.** Context-dependent positions are allowed but must commit to a decision rule: "*if* condition X *then* action Y." "It depends on the situation" without a decision function is disqualified.
 8. **The strawman researcher is the MVP.** Preserve and strengthen. Grounding events are treated as authoritative.
-9. **Model heterogeneity drives style divergence.** Agents in opposing tension pairs get DIFFERENT model aliases (opus/sonnet/haiku) so the reasoning style differs at the substrate, not just the prompt. Same-model debaters tend to converge stylistically even when their frameworks oppose.
+9. **Model heterogeneity drives style divergence.** Agents in opposing tension pairs get DIFFERENT model aliases (opus/sonnet) so the reasoning style differs at the substrate, not just the prompt. Same-model debaters tend to converge stylistically even when their frameworks oppose.
 10. **A meta-observer exists.** The blind-spot finder is a non-debater whose job is to surface premises both sides accept silently. Bug-light for the kinds of failures a tension pair can't see from inside.
 
 **Context budget:** Your job is to spawn agents, delegate collection and judging, and present the summary. You must NEVER call `TaskOutput` or read state files yourself. All heavy lifting is delegated to sub-agents (collector, judge). The full transcript is dumped to a markdown file via `debate_dump_markdown` and the judge reads it from disk — there is no in-band MCP tool to fetch the full stream. Ensure agents have permissions to write files, and have the ability to use any semantic search mcp tooling in the current environment.
@@ -65,7 +65,7 @@ In `dnd` mode the alignment IS the agent's primary identity (not just decoration
 | **7-8** | Three or four pairs + frame-challenger + extras | Cross-domain debates spanning epistemic and moral axes |
 | **9-10** | Maximum coverage | Use only when the topic genuinely needs every framework — UI gets crowded, judging gets slow |
 
-At every count, the **strawman researcher**, **blind-spot finder**, **haiku summariser**, and **timer** are always-on infrastructure agents (not counted in `agent_count`).
+At every count, the **strawman researcher**, **blind-spot finder**, **summariser**, and **timer** are always-on infrastructure agents (not counted in `agent_count`).
 
 ## Phase 2 — Initialize
 
@@ -100,10 +100,10 @@ Assign roles from the table below. You want **incompatible pairs**, not nine-way
 | **Empiricist** | Position must be backed by cited data with methodology visible. Rejects arguments from first principles when evidence exists. | "What's the sample size?", "What does the study actually measure?" | `sonnet` | precise | 150 |
 | **Rationalist** | Position derived from first principles and logical structure. Treats empirical data as one input among many; weights mechanism over correlation. | "The data measures a proxy", "Work backward from the decision function." | `opus` | deliberate | 150 |
 | **Precautionary** | Position minimizes worst-case downside. Treats low-probability-high-cost failure modes as dominant. | "You can't recover from X", "Design for the weakest link." | `sonnet` | precise | 150 |
-| **Accelerationist** | Position optimizes for upside capture in the emerging regime. Treats inertia-driven "current practice" as the cost, not the baseline. | "You're optimizing for a dying constraint", "Current adoption lags architectural inevitability." | `haiku` | bold | 150 |
+| **Accelerationist** | Position optimizes for upside capture in the emerging regime. Treats inertia-driven "current practice" as the cost, not the baseline. | "You're optimizing for a dying constraint", "Current adoption lags architectural inevitability." | `opus` | bold | 150 |
 | **Consequentialist** | Position evaluated by downstream outcomes, not process or metrics. Hostile to proxy measures. | "That's a funnel proxy, not an outcome", "What happens at 12 months?" | `sonnet` | precise | 150 |
 | **Deontologist / Principle-driven** | Position derived from a non-negotiable principle regardless of outcomes. Treats principle violations as disqualifying. | "Even if it works, it violates X", "The cost of precedent is the precedent." | `opus` | deliberate | 150 |
-| **Practitioner** | Position grounded in lived operational experience. Hostile to theory that doesn't match what they've seen. | "In practice, this never happens", "Here's what actually breaks first." | `haiku` | bold | 150 |
+| **Practitioner** | Position grounded in lived operational experience. Hostile to theory that doesn't match what they've seen. | "In practice, this never happens", "Here's what actually breaks first." | `sonnet` | bold | 150 |
 | **Systems-thinker** | Position focuses on feedback loops, emergent behavior, and second-order effects. Hostile to local optimization. | "That creates this perverse incentive", "At equilibrium, everyone converges and the signal dies." | `opus` | deliberate | 150 |
 | **Reductionist** | Position breaks the problem into components and optimizes each. Hostile to "it's all connected" hand-waving. | "Separate the layers", "That's three different problems wearing one label." | `sonnet` | precise | 150 |
 | **Contrarian / Frame-Challenger** | Position challenges the debate's premise itself. Asks whether the topic is the right unit of analysis. (Optional at agent_count 2 or 4; recommended at 3, 5, 6+ — see Assignment Rules.) | "The question is wrong", "This debate assumes X, but X doesn't hold." | `opus` | exploratory | 300 |
@@ -153,7 +153,7 @@ The alignment is communicated to the agent as their *communication style*, never
 
 Reasoning style is a function of the underlying model lineage, not just the prompt. To maximise divergence:
 
-- **Mix the model alias per agent** using the table's "Default model" column. `sonnet` is the workhorse — use it for evidence-anchored roles. `opus` runs deeper grounding chains — use it for deliberate / framework-driven roles and the meta-observers (strawman, frame-challenger, blind-spot finder). `haiku` commits harder and hedges less — use it for the impatient roles (accelerationist, practitioner).
+- **Mix the model alias per agent** using the table's "Default model" column. `sonnet` is the workhorse — use it for evidence-anchored and impatient roles. `opus` runs deeper grounding chains — use it for deliberate / framework-driven roles and the meta-observers (strawman, frame-challenger, blind-spot finder). NEVER use `haiku` for debaters — it fails too often and doesn't follow the debate-loop instructions reliably.
 - **Within a tension pair, prefer DIFFERENT models** (e.g. empiricist=`sonnet`, rationalist=`opus`). Same model + opposing frameworks tends to produce stylistically similar arguments. Different models + opposing frameworks produces real disagreement.
 - The strawman, frame-challenger, and blind-spot finder are the highest-leverage seats — favour `opus` for them.
 
@@ -200,11 +200,12 @@ Strawman + blind-spot finder + summariser + timer still exist. They're not align
 
 All debaters get **soft budget 150** by default; the high-leverage seat in this mode is whichever alignment is most likely to surface what others miss — usually CN (contrarian-on-principle) or TN (detached observer). Give that agent **soft budget 250** if you want it to act as the dnd-mode equivalent of the frame-challenger.
 
-Model assignment recommendations:
+Model assignment recommendations (`sonnet` and `opus` only — haiku doesn't follow the debate loop reliably):
 - **Good** alignments → `sonnet` (the workhorse; "good" arguments benefit from clear precision)
-- **Evil** alignments → `haiku` (haiku commits harder and hedges less; "evil" arguments benefit from no apology)
+- **Evil** alignments → `sonnet` ("evil" arguments benefit from committing hard with no apology — lean on the bold posture)
 - **Neutral** alignments → `opus` (deeper chains for the more analytical positions)
 - TN and CN specifically → always `opus` (the meta-observer seats)
+- Within a pair, if both debaters land on the same alias, flip one to the other — model contrast within a pair beats the per-alignment default.
 
 Present the roster to the user as: `| Name | Alignment | Pair member | Model | Soft budget |`.
 
@@ -221,7 +222,7 @@ Call:
 
 ## Phase 5 — Spawn All Agents + Strawman + Blind-Spot Finder + Summariser + Timer
 
-In a **single message**, spawn ALL debate agents, the strawman researcher, the blind-spot finder, the haiku summariser, AND the timer agent using parallel `Task` tool calls. Each agent gets the `model` alias from its role-table row.
+In a **single message**, spawn ALL debate agents, the strawman researcher, the blind-spot finder, the summariser, AND the timer agent using parallel `Task` tool calls. Each agent gets the `model` alias from its role-table row.
 
 Print the agent roster table so the user can follow along.
 
@@ -491,7 +492,7 @@ Task(
   subagent_type = "general-purpose",
   description   = "Debate agent {name}",
   run_in_background = true,
-  model         = {model},        # from the role table — "sonnet" / "opus" / "haiku"
+  model         = {model},        # from the role table — "sonnet" / "opus"
   prompt        = <AGENT_PROMPT below, filled in per agent>
 )
 ```

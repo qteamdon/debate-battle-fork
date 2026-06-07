@@ -9,7 +9,7 @@
       "name": "debate-battle",
       "source": "./",
       "description": "Multi-agent debate battles that fight LLM sycophancy. Agents with incompatible reasoning frameworks argue through an event-sourced stream, fact-checked in real time, judged independently, watchable live in your browser.",
-      "version": "1.1.0",
+      "version": "1.2.0",
       "homepage": "https://github.com/utilitydelta/debate-battle",
       "license": "MIT"
     }
