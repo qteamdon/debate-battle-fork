@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "debate-event-store"
-version = "0.1.0"
+version = "0.2.0"
 description = "An MCP server providing an in-memory event-sourced stream for multi-agent debates"
 readme = "README.md"
 license = "MIT"
