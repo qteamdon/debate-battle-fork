@@ -38,7 +38,7 @@ Extract these from the user request above. Ask the user if the **topic** is miss
 | `mode` | `epistemic` (alternative: `dnd` — see Phase 3 fork below) |
 | `materials_path` | current working directory |
 | `agent_count` | 6 (min 2, max 10 — see note on agent counts below) |
-| `time_limit_minutes` | 10 |
+| `time_limit_minutes` | 5 |
 | `judging_criteria` | "strongest grounded position that survives adversarial engagement, with explicit falsification criteria and practical decision rules" |
 | `per_agent_event_limit` | 200 |
 
@@ -72,6 +72,15 @@ At every count, the **strawman researcher**, **blind-spot finder**, **summariser
 1. **Create workspace**: `mkdir -p debate-workspace`
 2. **Reset event store**: Call MCP tool `debate_reset` with `per_agent_event_limit = 300`. This is the hard cap shared by all agents; individual roles get *soft* budget targets via their prompts (see Assignment Rules below). The 300 cap accommodates the strawman + frame-challenger tier without artificially throttling them.
 3. **Record start time**: Run `date +%s` and store the value as `START_TIME`.
+4. **Verify sub-agent permissions** (see callout below). In a deny-by-default permission mode, background sub-agents cannot surface an interactive approval prompt — an un-allowlisted tool is a hard deny, so the agent bails before publishing anything. Confirm the allowlist is in place before spawning.
+
+> **Required sub-agent permissions.** The orchestrator's own calls run in a trusted session, but the spawned background agents (debaters, strawman, blind-spot finder, summariser, timer, collector, judge) are frequently deny-by-default. They need an explicit allowlist or they fail instantly. `debate_publish` alone is **not enough** — it is OCC-gated on `debate_catch_up`, so an agent that can publish but cannot catch up is permanently stuck on `occ_conflict`. Allow:
+> - **Debate MCP tools:** `debate_catch_up`, `debate_publish`, `debate_get_recent_events`, `debate_post_summary`, `debate_status`, `debate_dump_markdown`, `debate_set_final_position`, `debate_set_verdict`, `debate_visualize`, `debate_reset`.
+> - **Tool discovery:** if the host exposes the debate tools as *deferred* schemas, agents need whatever tool loads them (e.g. `ToolSearch`).
+> - **Bash (timer / strawman / summariser):** `sleep`, `date`, `until`, `test`, and `[` — the `[ … ]` builtin is parsed as a command named `[`, so it must be allowlisted **separately** from `test` — plus `curl` for crawling.
+> - **Filesystem:** write access to `debate-workspace/**` for state files, and read access to the materials path.
+>
+> **Caveat — state-file writes.** Some hosts run background sub-agents under worktree/checkout isolation that blocks `Write` to the main working tree *regardless of the allowlist*. This only affects the optional `*-state.md` files; the event stream (dumped via `debate_dump_markdown`) is the authoritative record, so a debate still completes correctly without them. If you specifically need the state files written, the agents must run without that isolation.
 
 ## Phase 3 — Generate Agent Configurations
 
@@ -229,6 +238,8 @@ Print the agent roster table so the user can follow along.
 ### Timer Agent
 
 Spawn with `model: "sonnet"`. Haiku does not reliably block on raw `sleep` invocations inside a numbered procedural list — it tends to skip the sleeps and publish all warnings back-to-back. Sonnet executes the Bash poll-loop reliably and is cheap for a 4-publish workload. The timer is infrastructure, not debate substance, so it doesn't need to share the debaters' model alias.
+
+> **Host caveat — the timer needs a working wait primitive.** The timer is the most fragile infrastructure role because it must block on wall-clock time. Some hosts **block foreground `sleep` for sub-agents entirely** (and may also gate `Monitor` and background Bash), in which case the busy-wait loop below cannot run no matter what is allowlisted. If you observe the timer failing to wait, fall back to **running the four `ORCHESTRATOR:` checkpoint events from the orchestrator itself** — it is already trusted, already publishes the opening event, and can drive the four time targets (T33/T66/T85/T100) directly instead of delegating to a sub-agent.
 
 ```
 Task(
