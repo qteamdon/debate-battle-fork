@@ -8,7 +8,7 @@ import httpx
 import pytest
 
 import debate_event_store.server as server_mod
-from debate_event_store.server import call_tool, store
+from debate_event_store.server import call_tool, clock, store
 
 
 def _free_port() -> int:
@@ -20,8 +20,10 @@ def _free_port() -> int:
 @pytest.fixture(autouse=True)
 async def _reset_state():
     """Reset the global store and tear down the module-level web server."""
+    await clock.cancel()
     await store.reset(200)
     yield
+    await clock.cancel()
     # Tear down web_server between tests so port + state don't bleed.
     if server_mod.web_server is not None:
         try:

@@ -66,7 +66,8 @@ The script publishes a 10-event debate sequence (positions, rebuttals with steel
 | `debate_dump_markdown` | Write the transcript to disk as markdown. The judge reads this file. |
 | `debate_set_final_position` | Store a per-agent final position summary, replacing the opening POSITION in the web UI's Results overlay. Called by the judge. |
 | `debate_set_verdict` | Store the judge's final verdict in-memory alongside the event stream and broadcast it via SSE so the web UI's Results overlay updates live. |
-| `debate_reset` | Reset the store for a new debate. |
+| `debate_start_clock` | Start the in-process clock. Publishes four ORCHESTRATOR checkpoints. Idempotent while running. |
+| `debate_reset` | Reset the store for a new debate. Also cancels a running clock. |
 | `debate_visualize` | Start the embedded web server (idempotent, 127.0.0.1 only). |
 | `debate_get_recent_events` | Stateless read since a position. For the summariser. |
 | `debate_post_summary` | Broadcast a summary envelope to the SSE channel. **Never writes to the event log** — debaters never see it. For the summariser. |

@@ -10,6 +10,21 @@ This isn't a prompting problem. It's a training problem. Models optimise for hum
 
 You can't prompt your way out of a reward function.
 
+## What's new
+
+The 6-agent live debate is still here. These changes make it cheaper to use, easier to read, and easier to keep.
+
+| What | Why | How to use |
+|---|---|---|
+| **cross-check** skill | You already have a view. You want it attacked, not rewritten. | `/debate-battle:cross-check We should ship X next quarter.` |
+| **lean** (unchanged idea) | You want a recommendation written, then attacked. | `/debate-battle:lean Should we ship X?` |
+| **Short briefing** | The old judge write-up was a wall of text. | Every skill now answers in the same six headings. Rankings stay in an appendix / the Results overlay. |
+| **Clock in the store** | The timer was an LLM that slept. Cheap models skipped the sleeps. | The skill starts `debate_start_clock`. You do not spawn a timer agent. |
+| **Research scale** | A 6-agent show is too much for "go deep". | `/debate-battle:debate scale=research Go deep: should we ship X?` |
+| **Findings file** | People copied the answer out of chat. There was no flag they missed. | Default on. Look for `Saved to: debate-workspace/findings/YYYYMMDD - slug-n.md`. Say `write_findings=false` to skip. |
+
+Short notes on why each change was made live in [`docs/decisions/`](docs/decisions/).
+
 ## The Fix
 
 Don't ask one model to disagree with itself. Spawn six agents with incompatible reasoning frameworks, force them to argue through a shared append-only event stream, fact-check them in real time, and let an independent judge rank what survives.
@@ -27,20 +42,94 @@ Inside Claude Code:
 
 Requires [uv](https://docs.astral.sh/uv/) on your PATH. The plugin registers the bundled MCP event store automatically; the web UI ships pre-built, no Node toolchain needed.
 
-You get two skills:
+You get three skills:
 
 | Skill | What it does | Cost |
 |---|---|---|
-| `/debate-battle:debate` | The full battle. 2-10 debaters, strawman researcher, blind-spot finder, live visualization, judge | ~12-20x single agent |
+| `/debate-battle:cross-check` | Pressure-test a position you already have. Two blind reviewers, one short briefing. Files only | ~2–4x single agent |
 | `/debate-battle:lean` | Adversarial review. One analyst drafts, two blind reviewers attack, a fresh reviser integrates. Files only | ~3-5x single agent |
+| `/debate-battle:debate` | The full battle. 2-10 debaters, strawman researcher, blind-spot finder, live visualization, judge | ~12-20x single agent |
 
-Start one:
+Pick `cross-check` if you already have a view. Pick `lean` if you want a recommendation written, then attacked. Pick `debate` if the question itself is contested and you want disagreement kept.
+
+### `cross-check`
+
+**Purpose.** Attack a view you already hold. Do not rewrite it first.
+
+**Implementation.** The orchestrator copies your words into `debate-workspace/cross-check/00-user-position.md`. A researcher and a frame-challenger attack that file in parallel, blind to each other. A third agent writes a short briefing. No live UI. No event store. Three agent calls.
+
+**How to use.**
+
+```
+/debate-battle:cross-check We should migrate the monolith to microservices next quarter. Materials in ./docs
+```
+
+State the position in the same message. If you only name a topic, the skill will ask. Output lands in `debate-workspace/cross-check/`.
+
+### `lean`
+
+**Purpose.** Produce a deployable recommendation that has survived two independent attacks.
+
+**Implementation.** One analyst writes a draft. A researcher and a frame-challenger attack it in parallel, blind to each other. A fresh reviser integrates. Files only. Four agent calls.
+
+**How to use.**
+
+```
+/debate-battle:lean Should we migrate the monolith to microservices? Materials in ./docs
+```
+
+Output lands in `debate-workspace/lean/`. The file that matters is `04-final-memo.md`.
+
+### `debate`
+
+**Purpose.** Expose structural disagreement on a contested question. Keep named residual disagreements. Watch it live.
+
+**Implementation.** Spawns 2–10 debaters (default 6) plus a strawman researcher, a blind-spot finder, a summariser, a collector, and a judge. The event store runs the debate clock (no timer agent). They argue through the MCP event store. The browser UI is at http://127.0.0.1:8770.
+
+**How to use.**
 
 ```
 /debate-battle:debate Should we migrate the monolith to microservices? Materials in ./docs
 ```
 
-Open http://127.0.0.1:8770 before the agents start publishing. Watch.
+Open http://127.0.0.1:8770 before agents start publishing. `cross-check` and `lean` do not use this UI.
+
+### Research scale
+
+**Purpose.** Go deep on a bigger idea without a 6-agent crowd. Keep disagreement. Spend fewer tokens.
+
+**Implementation.** Same event store and short briefing as arena. Roster is one tension pair plus a frame-challenger plus the strawman. Hard cap is 20 events per agent. Every seat uses `sonnet`. No blind-spot finder. The store clock is only a backstop; agents should stop after one POSITION and about four follow-ups.
+
+**How to use.**
+
+```
+/debate-battle:debate scale=research Go deep: should we migrate the monolith to microservices?
+```
+
+Or say "research mode" / "go deep" in the request. Default with no hint is still the 6-agent arena.
+
+## What you get back
+
+Chat from every skill is a short briefing, in this order:
+
+1. What Survived
+2. What To Challenge
+3. Killshot
+4. Framing
+5. Residual Disagreement
+6. Next Steps
+
+Rankings, process scores, and event stats stay in an appendix. For a live debate they also land in the Results overlay. They do not get pasted into chat.
+
+The briefing above the appendix must stay under 600 words. A sample is in [`docs/fixtures/sample-debate-briefing.md`](docs/fixtures/sample-debate-briefing.md).
+
+### Findings file
+
+**Purpose.** Keep the briefing on disk so you do not have to copy-paste out of chat. This is on by default. You were not missing a flag before — the old skills did not write a dated file.
+
+**Implementation.** After the briefing is shown, the orchestrator writes the same six headings to `debate-workspace/findings/`. The name is `{YYYYMMDD} - {slug}-{n}.md`. `slug` is the query, lowercase, letters and digits, max 20 characters. `n` is 1, then 2 if that name already exists. `python3 scripts/findings_filename.py --topic "..."` builds the path. Say `write_findings=false` to skip.
+
+**How to use.** Run a skill as usual. At the end you should see `Saved to: debate-workspace/findings/20260911 - should-we-migrate-th-1.md`. That folder is gitignored.
 
 No topic handy? Populate every UI panel with a canned debate:
 
@@ -59,7 +148,7 @@ Tested against a single-agent baseline on the same topics with the same material
 
 **The surprise: lean review beat the full debate on its own turf.** Re-running the surf-school evaluation, the four-agent lean pipeline found a killshot neither the full debate nor the baseline surfaced: the council's surf-school permit window was closed for 14 months, so the founder couldn't legally operate at all. Attacking a static draft turns out to be sharper than fact-checking a moving stream, because a reviewer can interrogate what the draft *assumed*, not just what agents *claimed*. At ~26% of the full debate's token cost. One run, so hold it loosely.
 
-So: reach for `lean` when you need a deployable recommendation pressure-tested. Reach for `debate` when the framing itself is contested and you want disagreement exposed and preserved, not resolved away.
+So: reach for `cross-check` when you already have a view and want it attacked. Reach for `lean` when you need a deployable recommendation written and then pressure-tested. Reach for `debate` when the framing itself is contested and you want disagreement exposed and preserved, not resolved away.
 
 ## How a Debate Runs
 
@@ -69,13 +158,25 @@ The orchestrator parses your topic, builds a roster, and spawns everything in pa
 - **Strawman researcher.** The grounding layer. Pre-researches the topic, then monitors the stream and publishes `GROUNDING:` events: VERIFIED, DISPUTED, UNSUBSTANTIATED. An agent that keeps pushing a DISPUTED claim is visibly arguing in bad faith, and the judge notices.
 - **Blind-spot finder.** A meta-observer. Every ~10 events it publishes one critique naming what both sides of the dominant tension are taking for granted.
 - **Summariser.** Feeds the live UI's "Haiku Mind" panel through a side channel the debaters never see.
-- **Timer.** Publishes warnings at 33%, 66%, 85%, and time-up.
+- **Clock.** The event store, not an LLM, publishes warnings at 33%, 66%, 85%, and time-up.
+
+### Debate clock
+
+**Purpose.** Mark thirds of the debate window without spending a model on sleep.
+
+**Implementation.** `debate_start_clock` starts an asyncio task in the event-store process. It publishes four `ORCHESTRATOR:` events. A second start while it is running is a no-op. `debate_reset` cancels it.
+
+**How to use.** The `debate` skill calls it in Phase 2. You do not start it by hand unless you are driving the store yourself:
+
+```
+debate_start_clock duration_minutes=5
+```
 
 Roles get different models on purpose. Same model plus opposing frameworks produces stylistically similar arguments. Different models plus opposing frameworks produces real disagreement.
 
 Agents never see the roster. Each one gets only its own briefing and discovers the others' frameworks by reading POSITIONs as they land. Telling an agent who its rival is would script the disagreement instead of letting it emerge.
 
-When time is up, a collector reaps the background agents and a judge reads the full transcript, scores process compliance, ranks the positions, and pushes the verdict to the browser.
+When time is up, a collector reaps the background agents and a judge reads the full transcript. Chat gets the short briefing above. Rankings and process scores go to the Results overlay as an appendix.
 
 ## The Hard Rules
 
@@ -129,14 +230,30 @@ The store is in-memory, single-process, behind one asyncio lock. Debates produce
 | Path | What |
 |---|---|
 | `skills/debate/` | The full-battle orchestrator. This is the product; the store is plumbing |
+| `skills/debate/prompts/` | Host-agnostic agent briefs. `SKILL.md` reads these and fills them. |
+| `skills/debate/hosts/` | Spawn recipes. Claude Code is the current host. |
 | `skills/lean/` | The lean adversarial-review pipeline |
+| `skills/cross-check/` | Pressure-test a position the user already has |
+| `docs/decisions/` | Short notes on why a change was made |
+| `docs/fixtures/` | Sample briefing used to check length and heading order |
 | `debate-event-store/` | The MCP server: event store, FastAPI + SSE web server, React SPA |
 | `.mcp.json` | Registers the bundled MCP server when the plugin is installed |
 | `docs/` | Architecture and the comparative experiment findings |
 
+### Shared prompts
+
+**Purpose.** Keep agent briefs free of Claude `Task` calls so another host can reuse them.
+
+**Implementation.** Each skill folder has `prompts/` (the briefs) and `hosts/` (how to spawn). `SKILL.md` still runs the phases. It reads the prompt files and fills `{placeholders}`. Claude spawn recipes live in `hosts/claude.md`.
+
+**How to use.** Do not paste a shorter brief. Read the file named in `SKILL.md` and send that text to the sub-agent.
+
 ## Development
 
 ```bash
+python3 scripts/validate_skills.py
+python3 scripts/test_findings_filename.py
+
 cd debate-event-store
 uv venv .venv && source .venv/bin/activate
 uv pip install -e ".[dev]"

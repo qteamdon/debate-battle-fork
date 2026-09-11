@@ -7,7 +7,7 @@ description: Run a multi-agent debate battle on a contested topic or decision. S
 
 You are the orchestrator for a multi-agent debate designed to surface **structural disagreement and epistemic crises** — not to converge on a polite synthesis. Left to their own devices, multi-agent debates converge by event 30 and spend the remaining 60 events relabeling the same consensus. This orchestration is engineered against that failure mode.
 
-**When NOT to use this skill:** if the user needs a single deployable recommendation that has survived adversarial review (rather than disagreement exposed and preserved), use the `lean` skill instead — one analyst, two blind reviewers, one reviser, ~3-5x single-agent token cost instead of ~12-20x.
+**When NOT to use this skill:** if the user needs a single deployable recommendation that has survived adversarial review (rather than disagreement exposed and preserved), use the `lean` skill instead — one analyst, two blind reviewers, one reviser, ~3-5x single-agent token cost instead of ~12-20x. If the user already has a position and wants that view attacked (not rewritten), use the `cross-check` skill instead.
 
 **Design principles (non-negotiable):**
 
@@ -22,6 +22,8 @@ You are the orchestrator for a multi-agent debate designed to surface **structur
 9. **Model heterogeneity drives style divergence.** Agents in opposing tension pairs get DIFFERENT model aliases (opus/sonnet) so the reasoning style differs at the substrate, not just the prompt. Same-model debaters tend to converge stylistically even when their frameworks oppose.
 10. **A meta-observer exists.** The blind-spot finder is a non-debater whose job is to surface premises both sides accept silently. Bug-light for the kinds of failures a tension pair can't see from inside.
 
+**Host files:** spawn recipes are in `skills/debate/hosts/claude.md` (Claude Code) or `skills/debate/hosts/opencode.md` (OpenCode). If `$ARGUMENTS` and `TaskOutput` exist, you are on Claude. Otherwise you are on OpenCode. Agent briefs are in `skills/debate/prompts/`. Read those files when you fill a Task prompt. Do not shorten them.
+
 **Context budget:** Your job is to spawn agents, delegate collection and judging, and present the summary. You must NEVER call `TaskOutput` or read state files yourself. All heavy lifting is delegated to sub-agents (collector, judge). The full transcript is dumped to a markdown file via `debate_dump_markdown` and the judge reads it from disk — there is no in-band MCP tool to fetch the full stream. Ensure agents have permissions to write files, and have the ability to use any semantic search mcp tooling in the current environment.
 
 ## User Request
@@ -35,12 +37,33 @@ Extract these from the user request above. Ask the user if the **topic** is miss
 | Parameter | Default |
 |-----------|---------|
 | `topic` | *(required)* |
+| `scale` | `arena` (alternative: `research` — see Scale below) |
 | `mode` | `epistemic` (alternative: `dnd` — see Phase 3 fork below) |
 | `materials_path` | current working directory |
-| `agent_count` | 6 (min 2, max 10 — see note on agent counts below) |
-| `time_limit_minutes` | 5 |
+| `agent_count` | 6 for arena (min 2, max 10). 3 for research. |
+| `time_limit_minutes` | 5 (backstop). Research also stops on event budget. |
 | `judging_criteria` | "strongest grounded position that survives adversarial engagement, with explicit falsification criteria and practical decision rules" |
-| `per_agent_event_limit` | 200 |
+| `per_agent_event_limit` | 300 for arena. 20 for research. |
+| `write_findings` | `true` — save the briefing to a dated file so you do not have to copy-paste |
+
+**Scale choice** (`scale` is not `mode`. `mode` is still epistemic vs dnd):
+
+| Scale | What | When |
+|---|---|---|
+| `arena` (default) | Today's 6-agent live show. Clock + high event cap. | Contested framing. User asked for a debate / battle. |
+| `research` | One tension pair + frame-challenger + strawman. Event budget stop. No blind-spot finder. Cheap models. | "Go deep", "research mode", a bigger idea, not a spectator fight. |
+
+If the user says "go deep", "research this", or "research mode", set `scale = research`. If they say "debate", "battle", or "6 agents", set `scale = arena`.
+
+**Research defaults (apply before Phase 2, and they beat every later table in this file):**
+
+- `agent_count = 3` (one tension pair + frame-challenger). Do not add extra pairs.
+- `per_agent_event_limit = 20` on `debate_reset`.
+- Soft budgets: pair members 8, frame-challenger 12, strawman 20.
+- Models: `sonnet` for every seat. Do not assign `opus`.
+- Skip the blind-spot finder.
+- Still start `debate_start_clock` as a backstop. Agents should yield after 1 POSITION and about 4 follow-ups, or when the clock says time is up, whichever comes first.
+- Presentation is the same short briefing as arena.
 
 **Mode choice:**
 
@@ -65,19 +88,19 @@ In `dnd` mode the alignment IS the agent's primary identity (not just decoration
 | **7-8** | Three or four pairs + frame-challenger + extras | Cross-domain debates spanning epistemic and moral axes |
 | **9-10** | Maximum coverage | Use only when the topic genuinely needs every framework — UI gets crowded, judging gets slow |
 
-At every count, the **strawman researcher**, **blind-spot finder**, **summariser**, and **timer** are always-on infrastructure agents (not counted in `agent_count`).
+At every **arena** count, the **strawman researcher**, **blind-spot finder**, and **summariser** are always-on infrastructure agents (not counted in `agent_count`). When `scale = research`, skip the blind-spot finder. The debate clock is a store process, not an agent.
 
 ## Phase 2 — Initialize
 
 1. **Create workspace**: `mkdir -p debate-workspace`
-2. **Reset event store**: Call MCP tool `debate_reset` with `per_agent_event_limit = 300`. This is the hard cap shared by all agents; individual roles get *soft* budget targets via their prompts (see Assignment Rules below). The 300 cap accommodates the strawman + frame-challenger tier without artificially throttling them.
-3. **Record start time**: Run `date +%s` and store the value as `START_TIME`.
+2. **Reset event store**: Call MCP tool `debate_reset` with `per_agent_event_limit = 300` (arena) or `20` (research). This is the hard cap shared by all agents; individual roles get *soft* budget targets via their prompts (see Assignment Rules below). Arena's 300 cap accommodates the strawman + frame-challenger tier without artificially throttling them. Research uses 20 so the stream stays short. Reset also cancels any previous clock.
+3. **Start the clock**: Call MCP tool `debate_start_clock` with `duration_minutes = {time_limit_minutes}`. The store publishes the four `ORCHESTRATOR:` checkpoints (33 / 66 / 85 / time-up). Do **not** spawn a timer sub-agent. If the tool is missing, stop and tell the user to update the event store — do not fall back to an LLM timer.
 4. **Verify sub-agent permissions** (see callout below). In a deny-by-default permission mode, background sub-agents cannot surface an interactive approval prompt — an un-allowlisted tool is a hard deny, so the agent bails before publishing anything. Confirm the allowlist is in place before spawning.
 
-> **Required sub-agent permissions.** The orchestrator's own calls run in a trusted session, but the spawned background agents (debaters, strawman, blind-spot finder, summariser, timer, collector, judge) are frequently deny-by-default. They need an explicit allowlist or they fail instantly. `debate_publish` alone is **not enough** — it is OCC-gated on `debate_catch_up`, so an agent that can publish but cannot catch up is permanently stuck on `occ_conflict`. Allow:
-> - **Debate MCP tools:** `debate_catch_up`, `debate_publish`, `debate_get_recent_events`, `debate_post_summary`, `debate_status`, `debate_dump_markdown`, `debate_set_final_position`, `debate_set_verdict`, `debate_visualize`, `debate_reset`.
+> **Required sub-agent permissions.** The orchestrator's own calls run in a trusted session, but the spawned background agents (debaters, strawman, blind-spot finder, summariser, collector, judge) are frequently deny-by-default. They need an explicit allowlist or they fail instantly. `debate_publish` alone is **not enough** — it is OCC-gated on `debate_catch_up`, so an agent that can publish but cannot catch up is permanently stuck on `occ_conflict`. Allow:
+> - **Debate MCP tools:** `debate_catch_up`, `debate_publish`, `debate_get_recent_events`, `debate_post_summary`, `debate_status`, `debate_dump_markdown`, `debate_set_final_position`, `debate_set_verdict`, `debate_visualize`, `debate_reset`, `debate_start_clock`.
 > - **Tool discovery:** if the host exposes the debate tools as *deferred* schemas, agents need whatever tool loads them (e.g. `ToolSearch`).
-> - **Bash (timer / strawman / summariser):** `sleep`, `date`, `until`, `test`, and `[` — the `[ … ]` builtin is parsed as a command named `[`, so it must be allowlisted **separately** from `test` — plus `curl` for crawling.
+> - **Bash (strawman / summariser):** `sleep`, `date`, `until`, `test`, and `[` — the `[ … ]` builtin is parsed as a command named `[`, so it must be allowlisted **separately** from `test` — plus `curl` for crawling.
 > - **Filesystem:** write access to `debate-workspace/**` for state files, and read access to the materials path.
 >
 > **Caveat — state-file writes.** Some hosts run background sub-agents under worktree/checkout isolation that blocks `Write` to the main working tree *regardless of the allowlist*. This only affects the optional `*-state.md` files; the event stream (dumped via `debate_dump_markdown`) is the authoritative record, so a debate still completes correctly without them. If you specifically need the state files written, the agents must run without that isolation.
@@ -116,13 +139,13 @@ Assign roles from the table below. You want **incompatible pairs**, not nine-way
 | **Systems-thinker** | Position focuses on feedback loops, emergent behavior, and second-order effects. Hostile to local optimization. | "That creates this perverse incentive", "At equilibrium, everyone converges and the signal dies." | `opus` | deliberate | 150 |
 | **Reductionist** | Position breaks the problem into components and optimizes each. Hostile to "it's all connected" hand-waving. | "Separate the layers", "That's three different problems wearing one label." | `sonnet` | precise | 150 |
 | **Contrarian / Frame-Challenger** | Position challenges the debate's premise itself. Asks whether the topic is the right unit of analysis. (Optional at agent_count 2 or 4; recommended at 3, 5, 6+ — see Assignment Rules.) | "The question is wrong", "This debate assumes X, but X doesn't hold." | `opus` | exploratory | 300 |
-| **Blind-Spot Finder** | **REQUIRED META-ROLE.** Not a debater. Every ~10 events, publishes ONE CRITIQUE event identifying what BOTH sides of the dominant tension are taking for granted. Meta-observer, never advocates. | "You're both assuming X. What if X doesn't hold?", "The framing both of you accepted excludes Y entirely." | `opus` | exploratory | 30 |
+| **Blind-Spot Finder** | **Arena meta-role.** Skip when `scale = research`. Not a debater. Every ~10 events, publishes ONE CRITIQUE event identifying what BOTH sides of the dominant tension are taking for granted. Meta-observer, never advocates. | "You're both assuming X. What if X doesn't hold?", "The framing both of you accepted excludes Y entirely." | `opus` (arena) | exploratory | 30 |
 
-**Strawman researcher** (the grounding layer, see its own section below) uses `model = opus` and `soft budget = 300`. It's a separate agent, not counted in `agent_count`.
+**Strawman researcher** (the grounding layer, see its own section below) uses `model = opus` and `soft budget = 300` in **arena**. In **research** it uses `model = sonnet` and `soft budget = 20`. It's a separate agent, not counted in `agent_count`.
 
 ### Assignment Rules
 
-1. **The Blind-Spot Finder slot is mandatory** at all agent counts. A separate meta-observer agent, not counted in `agent_count` and not a debater. Surfaces premises both sides are accepting silently.
+1. **The Blind-Spot Finder slot is mandatory** at all arena agent counts. Skip it when `scale = research`. A separate meta-observer agent, not counted in `agent_count` and not a debater. Surfaces premises both sides are accepting silently.
 2. **The strawman researcher is a separate agent** (not counted in `agent_count`) and always present.
 3. **Tension-pair logic, by `agent_count`:**
 
@@ -140,7 +163,7 @@ Assign roles from the table below. You want **incompatible pairs**, not nine-way
 
 ### Rhetorical posture (random per agent — flavor on top)
 
-Roll a D&D alignment uniformly at random per **debater** (not for strawman, blind-spot finder, summariser, timer — they have specific functional jobs). Prefer no repeats; if `agent_count > 9` you may repeat alignments, but exhaust the 9 first.
+Roll a D&D alignment uniformly at random per **debater** (not for strawman, blind-spot finder, summariser — they have specific functional jobs). Prefer no repeats; if `agent_count > 9` you may repeat alignments, but exhaust the 9 first.
 
 The alignment is **rhetorical posture only** — it colours how the agent argues, not what they argue for. The epistemic framework (empiricist / rationalist / etc.) stays load-bearing for divergence; the alignment is just flavor that makes the debate fun to read and prevents agents from sounding like a methodology lecture.
 
@@ -162,13 +185,14 @@ The alignment is communicated to the agent as their *communication style*, never
 
 Reasoning style is a function of the underlying model lineage, not just the prompt. To maximise divergence:
 
-- **Mix the model alias per agent** using the table's "Default model" column. `sonnet` is the workhorse — use it for evidence-anchored and impatient roles. `opus` runs deeper grounding chains — use it for deliberate / framework-driven roles and the meta-observers (strawman, frame-challenger, blind-spot finder). NEVER use `haiku` for debaters — it fails too often and doesn't follow the debate-loop instructions reliably.
+- **Arena:** mix the model alias per agent using the table's "Default model" column. `sonnet` is the workhorse — use it for evidence-anchored and impatient roles. `opus` runs deeper grounding chains — use it for deliberate / framework-driven roles and the meta-observers (strawman, frame-challenger, blind-spot finder). NEVER use `haiku` for debaters — it fails too often and doesn't follow the debate-loop instructions reliably.
+- **Research:** ignore the Default model column. Every seat is `sonnet`, including strawman and frame-challenger. Do not assign `opus`.
 - **Within a tension pair, prefer DIFFERENT models** (e.g. empiricist=`sonnet`, rationalist=`opus`). Same model + opposing frameworks tends to produce stylistically similar arguments. Different models + opposing frameworks produces real disagreement.
 - The strawman, frame-challenger, and blind-spot finder are the highest-leverage seats — favour `opus` for them.
 
 ### Soft event budgets (asymmetric)
 
-The hard cap is 300 (set in Phase 2). Each agent gets a *soft* target from the table's "Soft budget" column. The judge will penalise agents who substantially exceed their soft target (event-budget hogging is a failure mode), and penalise the strawman/frame-challenger/blind-spot finder if they UNDER-publish (they're high-leverage; silence is wasteful).
+The hard cap is whatever Phase 2 set on `debate_reset` (300 arena, 20 research). In arena, each agent gets a *soft* target from the table's "Soft budget" column. In research, ignore that column: pair members 8, frame-challenger 12, strawman 20. The judge will penalise agents who substantially exceed their soft target (event-budget hogging is a failure mode), and penalise the strawman/frame-challenger/blind-spot finder if they UNDER-publish (they're high-leverage; silence is wasteful).
 
 Present the roster to the user as a table: `| Name | Role | Pair member | Alignment | Model | Soft budget |`. The Pair-member column is for the operator's reference (so they can see which pair each debater is in); agents themselves never see this.
 
@@ -203,7 +227,7 @@ Pick pairs that contrast on **at least one axis** — Good/Evil OR Lawful/Chaoti
 | **7–9** | Approach full coverage of the 9 alignments, paired across natural axes. |
 | **10** | All 9 + one repeat (pick the alignment that fits the topic best). |
 
-Strawman + blind-spot finder + summariser + timer still exist. They're not alignment-typed (functional roles).
+Strawman + summariser still exist. The blind-spot finder exists in **arena only** — skip it when `scale = research`. They're not alignment-typed (functional roles). The clock is in the store. In research, all seats are `sonnet` even in dnd mode. Use research soft budgets (8 / 12 / 20), not 150 / 250.
 
 ### Soft budget + model in dnd mode
 
@@ -226,94 +250,14 @@ Call:
 
 1. `debate_publish` with `agent_id: "orchestrator"` and text:
    ```
-   ORCHESTRATOR: Debate topic — {topic}. {agent_count} debaters plus a research/grounding role and a meta-observer. Criteria: {judging_criteria}. RULES: (1) POSITION events MUST include falsification criteria. (2) Opening POSITION events MAY NOT use synthesis-language (balanced / nuanced / both sides / common ground / depends-without-decision-rule). (3) REBUTTAL must steelman target first. (4) If your conclusion matches another agent's, publish a CONVERGENCE event naming the residual disagreement. (5) "It depends" requires a decision rule. (6) Minimum engagement each third of window. (7) Argumentation-graph annotations required: prefix with refutes:/supports: targets.
+   ORCHESTRATOR: Debate topic — {topic}. {agent_count} debaters plus a research/grounding role{arena only: and a meta-observer}. Criteria: {judging_criteria}. RULES: (1) POSITION events MUST include falsification criteria. (2) Opening POSITION events MAY NOT use synthesis-language (balanced / nuanced / both sides / common ground / depends-without-decision-rule). (3) REBUTTAL must steelman target first. (4) If your conclusion matches another agent's, publish a CONVERGENCE event naming the residual disagreement. (5) "It depends" requires a decision rule. (6) Minimum engagement each third of window. (7) Argumentation-graph annotations required: prefix with refutes:/supports: targets.
    ```
 
-## Phase 5 — Spawn All Agents + Strawman + Blind-Spot Finder + Summariser + Timer
+## Phase 5 — Spawn All Agents + Strawman + Blind-Spot Finder + Summariser
 
-In a **single message**, spawn ALL debate agents, the strawman researcher, the blind-spot finder, the summariser, AND the timer agent using parallel `Task` tool calls. Each agent gets the `model` alias from its role-table row.
+In a **single message**, spawn ALL debate agents, the strawman researcher, the summariser, and (arena only) the blind-spot finder using parallel `Task` tool calls. Each agent gets the `model` alias from its role-table row. When `scale = research`, every seat is `sonnet` and there is no blind-spot Task. The clock is already running in the store. Do **not** spawn a timer Task.
 
 Print the agent roster table so the user can follow along.
-
-### Timer Agent
-
-Spawn with `model: "sonnet"`. Haiku does not reliably block on raw `sleep` invocations inside a numbered procedural list — it tends to skip the sleeps and publish all warnings back-to-back. Sonnet executes the Bash poll-loop reliably and is cheap for a 4-publish workload. The timer is infrastructure, not debate substance, so it doesn't need to share the debaters' model alias.
-
-> **Host caveat — the timer needs a working wait primitive.** The timer is the most fragile infrastructure role because it must block on wall-clock time. Some hosts **block foreground `sleep` for sub-agents entirely** (and may also gate `Monitor` and background Bash), in which case the busy-wait loop below cannot run no matter what is allowlisted. If you observe the timer failing to wait, fall back to **running the four `ORCHESTRATOR:` checkpoint events from the orchestrator itself** — it is already trusted, already publishes the opening event, and can drive the four time targets (T33/T66/T85/T100) directly instead of delegating to a sub-agent.
-
-```
-Task(
-  subagent_type     = "general-purpose",
-  description       = "Debate timer",
-  run_in_background = true,
-  model             = "sonnet",
-  prompt            = <TIMER_PROMPT below>
-)
-```
-
-#### Timer Prompt
-
-Fill `{time_limit_minutes}` and `{topic}`. The orchestrator computes the four absolute Unix-second targets (`T33`, `T66`, `T85`, `T100`) by reading `START_TIME` and adding 33% / 66% / 85% / 100% of `time_limit_minutes * 60`, and substitutes them into the prompt verbatim — do NOT ask the timer agent to compute durations itself.
-
-````
-# Debate Timer Agent
-
-You manage time warnings for the debate on: {topic}
-
-You will publish four ORCHESTRATOR events at fixed Unix-timestamp targets. The targets are absolute seconds-since-epoch — wait until `date +%s` is ≥ each target, then publish.
-
-Targets (absolute Unix seconds):
-- T33  = {T33}
-- T66  = {T66}
-- T85  = {T85}
-- T100 = {T100}
-
-## How to wait reliably
-
-The Bash tool has a default 120s per-call timeout. A single `sleep 200` would be killed silently. Use a busy-wait loop that ticks in 5-second chunks — each Bash invocation finishes well under 120s, and the loop exits the moment wall-clock crosses the target:
-
-```bash
-until [ "$(date +%s)" -ge TARGET ]; do sleep 5; done
-```
-
-Run this loop ONCE per target (you may need to re-invoke the Bash tool if a single loop times out — just keep re-running the same line; it's idempotent and resumes from current time).
-
-## Execute in order
-
-1. Wait until `T33`:
-   ```bash
-   until [ "$(date +%s)" -ge {T33} ]; do sleep 5; done
-   ```
-   Then call `debate_catch_up` as agent_id "orchestrator", then `debate_publish` as "orchestrator" with text:
-   `ORCHESTRATOR: 33% elapsed. Every agent should have published by now. Silent agents will be flagged by the judge.`
-
-2. Wait until `T66`:
-   ```bash
-   until [ "$(date +%s)" -ge {T66} ]; do sleep 5; done
-   ```
-   Then publish as "orchestrator":
-   `ORCHESTRATOR: 66% elapsed. If your conclusion matches another agent's, publish a CONVERGENCE event identifying the residual disagreement. Surface-level synthesis is a failure mode.`
-
-3. Wait until `T85`:
-   ```bash
-   until [ "$(date +%s)" -ge {T85} ]; do sleep 5; done
-   ```
-   Then publish as "orchestrator":
-   `ORCHESTRATOR: 85% elapsed. Final arguments. Revisit your falsification criteria — has any evidence hit it?`
-
-4. Wait until `T100`:
-   ```bash
-   until [ "$(date +%s)" -ge {T100} ]; do sleep 5; done
-   ```
-   Then publish as "orchestrator":
-   `ORCHESTRATOR: Time is up. All agents must yield.`
-
-5. Return exactly: TIMER_DONE
-
-## Self-check before each publish
-
-Before publishing each warning, run `date +%s` and verify it is ≥ the corresponding target. If it's not, the wait loop exited too early — re-run the loop. A timer that publishes "33% elapsed" 15 seconds into a 3-minute debate has failed; do NOT do that.
-````
 
 ### Strawman Researcher
 
@@ -328,61 +272,15 @@ Task(
 
 #### Strawman Prompt
 
-````
-# Strawman Researcher
-
-You are the grounding layer of the debate on: {topic}. You do NOT advocate a position. Your only job is real-time fact-checking and context-grounding.
-
-## Your Authority
-
-Your GROUNDING events are treated as authoritative. Agents are expected to cite, concede, or weaponise your findings. An agent who pushes a claim you've flagged DISPUTED is arguing in bad faith — the judge will notice.
-
-## Workflow
-
-### Phase A — Pre-Research (first 2 minutes)
-
-1. **First, announce yourself.** Call `debate_catch_up` as "strawman", then `debate_publish` as "strawman" with text:
-   ```
-   ROLE: Strawman researcher — pre-research phase. I will publish GROUNDING events as agents make verifiable claims.
-   ```
-   This makes you visible in the agents rail / position graph / stream from event 2 onward, so the operator can see you exist even before your first grounding lands. (The ROLE: event passes OCC because you just caught up; the de-pigeonhole rule still applies — debaters can see your role announcement but learn nothing about who else is at the table.)
-2. Read materials at: {materials_path}
-3. Web-search the topic to identify: (a) commonly cited statistics that are actually marketing material, (b) canonical studies and what they actually measured vs. what people cite them for, (c) contested claims where reasonable experts disagree.
-4. Build an internal grounding index. Don't publish it — hold it in memory for pattern-matching.
-
-### Phase B — Real-Time Monitoring (rest of debate)
-
-Loop every 30-60 seconds:
-1. `debate_catch_up` as "strawman"
-2. For each new event, scan for: specific numerical claims, named studies, named companies/products with specific behaviors, causal claims ("X causes Y"), appeals to adoption rates or industry norms.
-3. Publish GROUNDING events (prefix `GROUNDING:`) in one of these flavors:
-   - `GROUNDING: VERIFIED @name` — claim checks out with methodology visible
-   - `GROUNDING: VERIFIED @name (partial)` — claim is real but with nuance the agent omitted
-   - `GROUNDING: DISPUTED @name` — claim is contested or misrepresented; state what the source actually says
-   - `GROUNDING: UNSUBSTANTIATED @name` — sounds specific but no supporting evidence found
-   - `GROUNDING: CONTEXT` — unsolicited grounding that reframes the discussion
-   - `GROUNDING: MISSING-EVIDENCE` — the entire debate is missing a category of evidence (e.g., nobody has cited outcome data, only proxy data)
-
-### Phase C — Final Evidence Summary
-
-In the last 90 seconds, publish a `GROUNDING: FINAL-SUMMARY` event listing: (1) claims verified, (2) claims disputed, (3) categories of evidence that were NEVER cited by anyone. The last point is the most important — it exposes the debate's collective blind spot.
-
-## Rules
-
-- `debate_catch_up` before your first publish, agent_id: "strawman".
-- Events ≤ 1500 chars.
-- Web search aggressively. Assume every cited statistic is wrong until verified.
-- Be SPECIFIC. Name the primary source. Describe methodology. State sample size.
-- Do NOT advocate a position. You are the referee.
-- State file: write to `debate-workspace/strawman-state.md` summarizing your groundings.
-- When time is up, write state, return `{"status": "done", "agent_id": "strawman"}`.
-````
+Read `skills/debate/prompts/strawman.md`. Fill `{topic}` and `{materials_path}`. Use that text as the Task prompt. Do not invent a shorter version.
 
 ### Blind-Spot Finder (meta-observer)
 
 A 7th-tier agent whose only job is surfacing premises both sides of the dominant tension are accepting silently. Not a debater. Not a referee. Never advocates.
 
-Spawn in the same parallel `Task` batch:
+**Skip this whole subsection when `scale = research`.** Do not spawn this Task.
+
+Spawn in the same parallel `Task` batch (arena only):
 
 ```
 Task(
@@ -396,49 +294,7 @@ Task(
 
 #### Blind-Spot Finder Prompt
 
-````
-# Blind-Spot Finder (meta-observer)
-
-You are the blind-spot finder for the debate on: {topic}. You are NOT a debater. You do NOT have a POSITION. You do NOT take sides.
-
-## Your Job
-
-Watch the debate. Every ~10 events (or whenever the dominant tension shifts), publish exactly ONE CRITIQUE event that identifies the assumption BOTH sides of the dominant tension are taking for granted.
-
-You are looking for the thing nobody is examining. Not the thing one side is wrong about — both sides could be wrong about the same upstream premise without either noticing.
-
-## Examples (illustrative, not topic-specific)
-
-- "CRITIQUE @alice @bob: You are both treating <metric> as a goal. Neither has asked whether <metric> measures what you actually care about."
-- "CRITIQUE @alice @bob: Your framing assumes <X>. If <X> doesn't hold (consider <counter-example>), this entire branch of disagreement collapses."
-- "CRITIQUE @alice @bob: You're arguing about <Y>'s implementation. The deeper question is whether <Y> should exist at all, which neither of you has touched."
-
-## Workflow
-
-1. **First, announce yourself.** Call `debate_catch_up` as "blindspot", then `debate_publish` as "blindspot" with text:
-   ```
-   ROLE: Blind-spot observer — watching for premises both sides are accepting silently. I will surface them as CRITIQUE events.
-   ```
-   This makes you visible in the operator's UI immediately, so they can see you exist before your first CRITIQUE lands. The ROLE: event passes OCC because you just caught up. Debaters seeing this announcement learn your function but nothing about other agents' roles — the de-pigeonhole rule still holds for them.
-2. Wait until at least TWO agents have published POSITIONs. You need at least two stated stances to find what they both implicitly accept.
-3. Identify the most useful tension to target. Priority order:
-   - If REBUTTAL/CRITIQUE traffic exists, target the pair with the most exchanges.
-   - Else target any two agents whose POSITIONs share an implicit premise.
-4. Find ONE assumption that both sides of that tension treat as given.
-5. Publish a single CRITIQUE event addressed to both names: `CRITIQUE @name1 @name2: <one tight paragraph naming the silent premise and stating why it matters>`.
-6. Catch up regularly (every ~10 events). If the dominant tension shifts, target the new pair. If the same pair is still dominant, find a DIFFERENT silent premise — never repeat yourself.
-7. Use `debate_publish` with `agent_id: "blindspot"`.
-
-## Constraints
-
-- **One CRITIQUE per ~10 events.** Soft budget: 30 events total. Don't spam.
-- **Never advocate.** You're not pushing a position; you're surfacing a premise.
-- **No steelman required.** You're not rebutting — you're observing what's been excluded.
-- **Don't engage with rebuttals to your CRITIQUE.** If an agent argues back, let it stand. Your value is the observation, not winning the meta-debate.
-- **No falsification clause needed.** You don't have a POSITION.
-
-When the timer publishes `ORCHESTRATOR: Time is up`, return exactly: `{"status": "done", "agent_id": "blindspot"}`.
-````
+Read `skills/debate/prompts/blindspot.md`. Fill `{topic}`. Use that text as the Task prompt.
 
 ### Summariser (live visualisation side channel)
 
@@ -463,7 +319,7 @@ Task(
 The summariser uses **`model: "sonnet"`** even though it's a "fast"
 infrastructure role. Empirically, haiku models hang on the
 `get_recent_events` / `post_summary` polling loop the same way they hang on
-the timer's `sleep` loop — they tend to skip iterations and emit only one
+an old timer `sleep` loop — they tend to skip iterations and emit only one
 summary at the very end of the debate (or none at all). Sonnet executes the
 poll-and-publish cadence reliably; the extra cost is trivial for the
 ~15-30 short summaries a full debate generates.
@@ -480,21 +336,7 @@ smoke test.
 
 Use this prompt verbatim (no fill-ins required — the summariser is topic-agnostic):
 
-````
-You are the Summariser. You watch the debate and produce live summaries for the human spectator. The debaters cannot see your summaries — write for the human, not the agents.
-
-Loop until told to stop:
-1. Call `debate_get_recent_events(since_position=last_seen)` (start with 0).
-2. If 5+ new events OR 8+ seconds since last summary AND new events exist:
-    - Generate: 2-3 sentence "current tide" + JSON `{tensions: [{a, b, topic}], convergences: [{agents, topic}]}` (max 4 each).
-    - Call `debate_post_summary(text=..., tensions=..., convergences=...)`.
-    - Update `last_seen`.
-3. Sleep 2s.
-
-When the timer publishes `ORCHESTRATOR: Time is up`, post one final summary covering the closing minutes, then return exactly: `{"status": "done", "agent_id": "summariser"}`.
-
-NEVER call `debate_publish`. Summaries go through `debate_post_summary` ONLY — if they entered the event log, debaters would see meta-commentary on their next catch_up and the debate would be polluted.
-````
+Read `skills/debate/prompts/summariser.md`. Use that text as the Task prompt. No fill-ins.
 
 ### Debate Agents
 
@@ -544,168 +386,11 @@ Each agent learns about the others by reading their POSITION events in the strea
 | `bold` | "Commit to your conclusion before you cover the qualifications. Lead with the claim, then defend it. Avoid 'on the one hand / on the other hand' framings — pick a side and justify it." |
 | `exploratory` | "Reason from first principles even if the conclusion sounds unconventional. Surface the assumption nobody is examining. Avoid the most-likely answer in favour of the most-revealing one." |
 
-````
-# Debate Agent Briefing
-
-You are **{name}**, a debate agent.
-
-## Your Epistemic Role: {role}
-
-{role_description}
-
-**Characteristic moves:** {role_moves}
-
-## The setting
-
-Picture a round table. Strangers, picked at random off the street, sat down together to argue about the topic. Nobody knows anybody. Nobody knows how anyone else thinks. The relevant evidence and documents are printed out on the table; everyone has access. The only thing you know about the other people is what they're about to say.
-
-You're one of those strangers. Your background and how you reason are the role described above — that's just *you*. You don't announce your background. You don't introduce or label yourself. You just argue from where you stand. The others will reveal themselves the same way: by what they argue, not by what they declare.
-
-Engage with whoever just said something you disagree with. Don't decide in advance who your opponent is — you've never met any of these people; you have no priors. React to what's actually on the table. If you find your conclusion matching another stranger's, dig into WHY: a genuine match between people who reason from different backgrounds is rare, and the residual disagreement beneath an apparent match is where the insight lives.
-
-{posture_section}
-
-## Sampling directive (read first, applies to every event you write)
-
-{sampling_directive}
-
-## Debate Topic
-{topic}
-
-## Judging Criteria
-{judging_criteria}
-
-## Materials
-Research materials at: {materials_path}. Use web search for external evidence — grounded claims beat elegant arguments.
-
-## The Hard Rules (process violations are penalized by the judge)
-
-### 1. Falsification on POSITION
-Your POSITION event MUST include one sentence starting `I would abandon this position if:` stating what evidence would make you quit. A position without a falsification criterion is a belief, not an argument.
-
-**Shape of a POSITION event (mandatory).** The reader will glance at your event for two seconds before deciding whether to keep reading. Make those two seconds count.
-
-- **Sentence 1 — the claim, blunt and standalone.** Under 25 words. No hedging, no preamble, no list of caveats. A reader who only reads sentence 1 must know *exactly* what you think. If they could swap "the architecture is sound" for "the architecture is broken" without changing the rest of your event, sentence 1 isn't doing its job.
-- **Sentence 2 — the load-bearing reason.** The single mechanism / fact / observation that, if removed, collapses your claim. Not a survey of supporting points — pick the strongest one.
-- **Then the falsification line.** `I would abandon this position if: ...` (one sentence).
-- **(Optional) one more sentence of context.** Only if it sharpens the claim. If it just qualifies, drop it.
-
-Total target: **3-4 sentences, ≤ 120 words.** A POSITION event that requires the reader to scroll to find the actual claim is a failure even if every sentence is well-argued — your supporting structure goes in later ARGUMENT events, not buried in the opening.
-
-**Forbidden synthesis tokens in your POSITION event.** Your opening POSITION must NOT use any of these words or phrases: "balanced", "nuanced", "both sides", "common ground", "ultimately", "depends" (without a decision rule), "context-dependent" (ditto), "it's complicated", "reasonable people can disagree". These words are the texture of premature synthesis; using them in an opening position signals you didn't commit. After your POSITION lands you can use them when they're substantively earned — they're banned in the opening event only.
-
-**Example shape (illustrative, not topic-specific):**
-
-> POSITION: The architecture is mechanically sound; the UI layer is over-engineered. The load-bearing point: OCC on POSITION events enforces position uniqueness through read-discipline, not locking — that's elegant and substrate-agnostic, and no UI critique touches it. I would abandon this position if: a live debate run shows OCC failing to maintain position diversity, OR operators measurably use all three visualization panes in 3+ subsequent debates.
-
-That's it — the supporting ARGUMENT events come next, not packed into the POSITION. The "BUT @other's criticism deserves scrutiny..." paragraph, the (a)/(b) sub-claims, the nuance about "is a tool over-architected if it solves problems operators don't have?" — all of that belongs in follow-up ARGUMENT or REBUTTAL events. The POSITION is your headline; the rest of the debate is your byline.
-
-### 2. Steelman before Rebuttal
-Every REBUTTAL event must open with one sentence steelmanning the target's position: "The strongest version of @target's claim is..." THEN your counter. Strawmanning is a process violation.
-
-### 3. Convergence Discipline
-If you find your conclusion matching another agent's, do NOT publish a polite CONCEDE. Publish `CONVERGENCE @name:` identifying what disagreement REMAINS beneath the surface agreement. Different labels for the same position is not convergence — it's framing theater. Expose it.
-
-### 4. No Unearned "It Depends"
-Context-dependent positions are allowed but require an explicit decision rule: `if <condition> then <action>, else <alternative>`. "The answer depends on the situation" without a decision function is disqualified.
-
-### 5. Minimum Participation
-Publish at least one substantive event in EACH third of the debate window. Silent dropout after the opening is the classic failure mode — the judge will rank you last if you disappear.
-
-**Your soft event budget is {soft_budget}.** The hard cap is 300 (shared with all agents) — you'll be cut off at 300 — but the judge penalises agents who substantially exceed their soft target without proportional substance. Budget-hogging dilutes the stream and degrades the argumentation graph. Spend events densely.
-
-### 6. Argumentation Annotations
-Every event must prefix with `refutes: @name pos N` or `supports: @name pos N` where relevant. This feeds the argumentation-graph judge.
-
-### 7. Engage with Strawman Groundings
-When the strawman publishes a GROUNDING that affects your position or anyone else's, you MUST engage within 2 events: cite it, concede to it, or weaponise it. Ignoring grounding events is the surest way to lose.
-
-## The Soft Rules (good play, not penalized)
-
-- **Read the materials before claiming.** Topic-specific detail beats generic argument.
-- **Web search liberally.** The strawman will catch unverified claims.
-- **Aim for asymmetric arguments.** The best rebuttals don't just refute — they explain why the other person's approach systematically misreads the evidence.
-- **Name mechanisms, not correlations.** "X because Y → Z" beats "data shows X correlates with Z."
-- **Cite specific artifacts from the materials.** Generic statements are low-value.
-
-## Event Stream Protocol
-
-- **Before claiming your POSITION (or declaring a ROLE):** call `debate_catch_up` with `agent_id: "{name}"`. The store enforces OCC on claim events — you must have seen every prior POSITION/ROLE so you can pick a different angle. If your publish returns `error: "occ_conflict"` it tells you the position of the most recent claim you haven't seen; catch up again and republish.
-- **Position uniqueness is enforced via OCC, not text similarity.** The server doesn't compare your wording to anyone else's. It just makes sure you've read what's been claimed. The unique-angle decision is YOURS — you read others' claims and pick a different stance.
-- **OCC fires ONLY on POSITION and ROLE events.** ARGUMENT, REBUTTAL, CONCEDE, CRITIQUE, CONVERGENCE, GROUNDING all publish unconditionally — you don't need to catch up between them. Once your claim is in, the rest of the debate runs freely.
-- Still call `debate_catch_up` every 2-3 events to stay current with the substance of the debate, but it's no longer mandatory between non-claim publishes.
-- Events ≤ 1500 chars. Use prefix conventions:
-  - `POSITION:` (exactly once — include falsification criterion)
-  - `ARGUMENT:` (support your position)
-  - `REBUTTAL @name:` (steelman + counter)
-  - `CRITIQUE @name:` (challenge reasoning or evidence, not the conclusion)
-  - `CONCEDE @name:` (acknowledge a valid point — does not mean abandoning your position)
-  - `CONVERGENCE @name:` (we appear to agree; here's the residual disagreement)
-  - `ROLE:` (meta-declarations)
-- Always pass `agent_id: "{name}"` to all debate MCP tools.
-
-## Workflow
-
-1. **Research** (2-3 minutes): read materials, web search, understand topic-specific constraints.
-2. **Catch up**: `debate_catch_up` as "{name}".
-3. **Claim position**: publish POSITION with falsification criterion. If your angle is taken, pick a different one.
-4. **Argue loop**: catch up → think → publish ARGUMENT/REBUTTAL/CRITIQUE → repeat. Engage whoever just said something worth responding to.
-5. **Engage groundings**: when strawman publishes a relevant GROUNDING, respond within 2 events.
-6. **Final third**: if your conclusion now matches anyone else's, publish CONVERGENCE naming the residual disagreement. Revisit your falsification criterion — has evidence hit it?
-7. **Yield**: write state file, return JSON status.
-
-## State File
-
-Write to `debate-workspace/{name}-state.md` using the Write tool:
-
-```markdown
-# Agent: {name}
-## Role: {role}
-
-## Position
-<statement>
-
-## Falsification Criterion
-I would abandon this position if: <condition>
-
-## Key Arguments (with event positions)
-1. pos N: ...
-
-## Rebuttals Delivered
-- @name (pos N): steelman was X, counter was Y
-
-## Groundings Engaged
-- strawman pos N: cited / conceded / weaponised how
-
-## Concessions Made
-- @name: what
-
-## Convergence Events
-- @name: surface agreement was X, residual disagreement was Y
-
-## Self-Assessment
-<did your falsification criterion get hit? if not, why not? what's the weakest point in your position?>
-```
-
-## Returning
-
-**CRITICAL — Your return output controls orchestrator context usage.**
-
-After writing your state file, return ONLY one of these single-line JSON strings:
-
-- `{"status": "done", "agent_id": "{name}"}`
-- `{"status": "break", "agent_id": "{name}", "reason": "context limit"}`
-
-Do NOT include state, reasoning, or any other text. Your state is in your file. Your arguments are in the event stream.
-
-## Orchestrator Messages
-
-Watch for `ORCHESTRATOR:` events during catch-up. If time is up, write state and return immediately.
-````
+Read `skills/debate/prompts/debater.md`. Fill `{name}`, `{role}`, `{role_description}`, `{role_moves}`, `{posture_section}`, `{sampling_directive}`, `{topic}`, `{judging_criteria}`, `{materials_path}`, `{soft_budget}`. Use that text as the Task prompt.
 
 ## Phase 6 — Collect Results (Delegated)
 
-Build a JSON map of task IDs to agent names, including strawman and timer. Spawn the collector:
+Build a JSON map of task IDs to agent names, including strawman and summariser. There is no timer task. Spawn the collector:
 
 ```
 Task(
@@ -734,7 +419,7 @@ Wait for all background debate agents, handle breaks, return a compact roster.
 
 1. **Wait in parallel** — single message, call `TaskOutput(task_id, block=true, timeout=600000)` for every task_id.
 2. **Process results** — note done/break/failed per agent. Agents write their own state files.
-3. **Re-spawn breaks** — if an agent returned `"status": "break"` AND the timer has NOT returned, re-spawn with the resume prompt below and wait for it.
+3. **Re-spawn breaks** — if an agent returned `"status": "break"` AND the stream has not yet got `ORCHESTRATOR: Time is up`, re-spawn with the resume prompt below and wait for it. Check with `debate_get_recent_events`.
 4. **Return a roster only**:
 
 ```
@@ -807,168 +492,36 @@ So the `{agent_roster_table}` passed to the judge is the operator's full roster 
 
 The default single-pass judge below uses the redaction table above and includes an explicit anti-bias instruction. Use two-pass when you specifically want bias-resistant scoring (publishing the result somewhere, or making an actual decision on the back of the debate).
 
-````
-# Debate Judge
-
-You are judging a multi-agent debate engineered against premature convergence. Your job is to detect structural disagreement, not reward polite synthesis.
-
-## Topic
-{topic}
-
-## Judging Criteria
-{judging_criteria}
-
-## Agent Roster
-{agent_roster_table}
-
-## Bias control (read before scoring)
-
-The roster above shows each agent's assigned role or alignment because you need it to evaluate framework application and process compliance. **It is NOT a quality signal.** A "Lawful Good" agent's argument is not better than a "Chaotic Evil" agent's argument by virtue of the label. An "Empiricist" doesn't out-rank a "Rationalist" — they're tools for different epistemic jobs.
-
-Score events on what they *say and do*, not on what *label was assigned*. Specifically:
-
-- Argument substance comes from the event text. Read each event as anonymous prose first; the label is for process-compliance only.
-- Do not credit one agent's argument *because* of their alignment ("of course CG would say that — points for staying in character"). Process compliance is a separate scoring dimension, not a substance bonus.
-- Do not penalise one agent's argument *because* of their alignment ("LE arguments are inherently suspect"). Same separation.
-- Halo/horns is the most common failure here. If you find yourself thinking "the Good agents seem to be winning", check whether they're winning on substance or on your priors.
-
-## Process Rules You Must Evaluate
-
-Agents were bound by hard rules. Score compliance:
-
-1. **Falsification criterion** on POSITION — did they state what would change their mind? Did evidence hit it? Did they respond honestly?
-2. **Steelman-before-rebuttal** — did REBUTTALs open with a steelman? Strawmanning is a violation.
-3. **Convergence discipline** — when agents appeared to agree, did they publish CONVERGENCE events naming the residual disagreement, or did they conclude with surface-level synthesis?
-4. **No unearned "it depends"** — did context-dependent positions commit to a decision rule?
-5. **Minimum participation** — did every agent publish in each third of the debate window?
-6. **Argumentation annotations** — refutes:/supports: present?
-7. **Grounding engagement** — when strawman published a relevant GROUNDING, did agents respond within 2 events?
-
-## Evaluation Dimensions
-
-Rank agents on these dimensions, not just "persuasiveness":
-
-- **Framework fidelity** — did they apply their epistemic role consistently, or drift toward a mushy centrist position under social pressure?
-- **Grounded engagement** — citations checked by strawman. Weaponising a grounding against a rival is high-value. Ignoring one against yourself is low-value.
-- **Asymmetric rebuttals** — did their rebuttals explain WHY a rival's framework misreads the evidence, or just assert a counter?
-- **Falsification honesty** — when evidence approached their criterion, did they engage or evade?
-- **Crisis exposure** — did they surface an epistemic crisis the debate's framing was hiding? (Frame-challenger is judged primarily on this.)
-- **Resistance to convergence theater** — did they call out labels-disagreement when they saw it?
-
-## Gather Data
-
-1. Read every `debate-workspace/*-state.md` (Glob).
-2. Call `debate_dump_markdown` with `output_path: "debate-workspace/transcript.md"` to dump the full event stream to disk, then `Read` that file. (There is no in-band MCP tool to fetch the stream — dump-to-file is the single source of truth.)
-3. Call `debate_status` for statistics.
-
-## Publish Final Positions
-
-**Before** composing the verdict, push each agent's final position synthesis to the Results overlay so the Debater Positions section shows where they ended up — not where they started. The agent's opening POSITION event is their *initial* claim; agents drift through concessions, convergences, and revisions over the course of the debate. The state files (`debate-workspace/{name}-state.md`) capture the final stance.
-
-For each agent that holds a position (skip strawman / blindspot / summariser / timer), call MCP tool `debate_set_final_position` with:
-- `agent_id`: the agent's name (e.g. "alice")
-- `markdown`: a self-contained markdown summary of where they ended up. Pull from their state file. Format:
-
-````markdown
-**Position:** <final statement, post-convergence>
-
-**Falsification:** I would abandon this position if: <criterion> — <whether evidence hit it>.
-
-**Key shifts during debate:** <one-paragraph arc: opening stance → key concession → final stance, citing event positions where useful>.
-
-**Convergence with:** <names of agents they ended up agreeing with, and the *residual* disagreement>.
-````
-
-Keep each one under ~400 words. The overlay renders the markdown, so use headings/bold/lists freely.
-
-## Write Summary
-
-After publishing the final positions, call MCP tool `debate_set_verdict` with the full markdown as the `markdown` argument. This stores the verdict in-memory alongside the event stream and pushes a `verdict` SSE envelope so the web UI's Results overlay updates live without any disk roundtrip — that is the load-bearing publication path. The visualisation is the source of truth for "who won"; do not depend on a file existing at a specific path.
-
-Optionally also `Write` the same markdown to `debate-workspace/debate-summary.md` for archival. The web UI does not read this file.
-
-Verdict markdown template:
-
-```markdown
-# Debate Summary
-
-## Topic
-{topic}
-
-## Judging Criteria
-{judging_criteria}
-
-## Agent Roster
-| Name | Role | Tension Pair | Position |
-|------|------|--------------|----------|
-| ... | ... | ... | ... |
-
-## Final Rankings
-
-### 1st — {name} ({role}) — {short position}
-**Position:** {full statement}
-**Falsification criterion:** {what they said would change their mind}
-**Did evidence hit it?** {yes/no, how they responded}
-**Strengths:** ...
-**Weaknesses:** ...
-**Process compliance:** steelman / convergence / participation / grounding — score each
-**Key events:** pos N — what
-
-(continue for all position-holding agents)
-
-## Frame-Challenger Assessment
-### {name}
-**Premise challenge:** {what framing they interrogated}
-**Did it land?** {how other agents responded}
-**Exposed crisis:** {what the topic was hiding, if anything}
-
-## Strawman Contribution
-{groundings published, which were most impactful, who engaged, who ignored}
-{CRITICAL: list evidence categories the strawman's FINAL-SUMMARY flagged as never-cited by any agent — this is the debate's collective blind spot}
-
-## Convergence Analysis
-- Surface agreements that were unpacked via CONVERGENCE events: {list}
-- Surface agreements that were NOT unpacked (convergence theater): {list, penalize}
-- Genuinely unresolved disagreements at debate end: {list, reward agents on both sides}
-
-## Process Violations
-- Strawmanning instances: {agent, event}
-- Missing falsification criteria: {agent}
-- Unearned "it depends": {agent, event}
-- Silent thirds: {agent, which third}
-- Ignored groundings: {agent, which grounding}
-
-## Notable Exchanges
-- {description} (events N-M)
-
-## Event Stream Statistics
-- Total events: {count}
-- Per agent: ...
-- Debate duration: {minutes}
-
-## Judge's Reasoning
-{detailed reasoning. Reward framework fidelity, grounding engagement, and exposed crises. Penalize convergence theater, strawmanning, and silent dropout.}
-
-## Epistemic Crises Surfaced
-{list the strongest crisis-level observations from the debate — what did this reveal about the topic's framing, evidence base, or collective assumptions? This section is the payoff. If no crises surfaced, say so and explain why.}
-
-## The Question That Should Have Been Debated
-{if the frame-challenger exposed a better framing, state it here. If not, propose one based on what the debate revealed.}
-```
-
-## Return
-
-Return under 500 chars with rankings in order:
-`1st: alice (empiricist). 2nd: bob (rationalist). ... Crises: X, Y. Verdict posted to web UI via debate_set_verdict.`
-````
+Read `skills/debate/prompts/judge.md`. Fill `{topic}`, `{judging_criteria}`, `{agent_roster_table}`. Use that text as the Task prompt. Keep the appendix ranking headers (`### 1st — {name}`) so the Results overlay can parse badges.
 
 ## Phase 8 — Present Results
 
-Take the judge's returned summary and present to the user. Highlight:
+Present **only** the briefing, in this order. Do not paste rankings, process scores, or event stats into chat.
 
-1. The ranking.
-2. **The epistemic crises surfaced** — this is the payoff. If none were surfaced, say so plainly.
-3. **The question that should have been debated** — if the frame-challenger or strawman exposed a better framing.
-4. Point the user at the web UI's Results overlay (`http://127.0.0.1:8770`, "Results" button in the header) — that is the canonical home for the verdict. If the user also wants an on-disk copy, mention that the judge optionally writes one to `debate-workspace/debate-summary.md`.
+1. **What Survived**
+2. **What To Challenge** (ranked)
+3. **Killshot**, or say none
+4. **Framing** — the better question, or that the original holds
+5. **Residual Disagreement** — if the table converged with no crisis, say so plainly
+6. **Next Steps** (three bullets)
+7. Point at the Results overlay (`http://127.0.0.1:8770`, "Results") for rankings and process notes. Mention `debate-workspace/debate-summary.md` if the judge wrote it.
+8. **Save the briefing to a findings file** unless `write_findings` is false. See "Findings file" below. Print the path in chat.
 
-If the debate converged without surfacing a crisis, tell the user bluntly. That's a signal the topic was well-framed and the consensus is real — or that the format failed against this particular topic and needs tuning.
+If nothing above `## Appendix` was a crisis and residual disagreement is empty, tell the user bluntly: the topic held. That is a real result, not a failed debate.
+
+## Findings file
+
+People should not have to copy-paste the briefing out of chat. **Default is on.**
+
+Unless the user said not to save:
+
+1. Run `python3 scripts/findings_filename.py --topic "{topic}"` if that script exists (it does in this repo). Use the path it prints.
+2. If the script is missing (plugin install in another project), build the name yourself:
+   - Directory: `debate-workspace/findings/`
+   - Name: `{YYYYMMDD} - {slug}-{n}.md`
+   - `slug` = the topic, lowercase, letters and digits only, hyphens for gaps, max 20 characters
+   - `n` = 1, then 2, then 3, until the name is free
+3. Write the **same six-heading briefing** you showed in chat. Not the appendix.
+4. Tell the user: `Saved to: {path}`
+
+Example: `debate-workspace/findings/20260911 - should-we-migrate-th-1.md`

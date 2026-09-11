@@ -45,7 +45,7 @@ The **summary channel** is a side channel only humans see. The summariser subage
 
 `tests/test_end_to_end.py::test_summary_reaches_browser_but_not_event_log` asserts this boundary holds.
 
-Why the summariser is a Claude Code subagent and not a Python background task: the orchestrator already spawns debaters, strawman, and timer as subagents, so the summariser is a prompt, not a service. No `anthropic` dependency in the Python process, no API key plumbing; it reuses Claude Code's model auth.
+Why the summariser is a Claude Code subagent and not a Python background task: the orchestrator already spawns debaters and the strawman as subagents, so the summariser is a prompt, not a service. The debate clock is in the store (not a subagent). No `anthropic` dependency in the Python process, no API key plumbing; it reuses Claude Code's model auth.
 
 ## HTTP surface
 

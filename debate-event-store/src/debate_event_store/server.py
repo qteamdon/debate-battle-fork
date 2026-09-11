@@ -7,10 +7,12 @@ from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import Tool, TextContent
 
+from .clock import DebateClock
 from .store import EventStore
 from .web.server import WebServer
 
 store = EventStore()
+clock = DebateClock(store)
 app = Server("debate-event-store")
 
 # Lazily constructed on first `debate_visualize` or `debate_post_summary` call.
@@ -135,8 +137,29 @@ async def list_tools() -> list[Tool]:
             },
         ),
         Tool(
+            name="debate_start_clock",
+            description=(
+                "Start the in-process debate clock. Publishes four ORCHESTRATOR "
+                "checkpoint events at 33%, 66%, 85%, and 100% of duration. "
+                "Idempotent while running. Reset cancels it. Replaces the timer sub-agent."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "duration_seconds": {
+                        "type": "number",
+                        "description": "Debate length in seconds. Prefer this in tests.",
+                    },
+                    "duration_minutes": {
+                        "type": "number",
+                        "description": "Debate length in minutes. The skill uses this.",
+                    },
+                },
+            },
+        ),
+        Tool(
             name="debate_reset",
-            description="Reset the event store for a new debate. Clears all events and agent positions.",
+            description="Reset the event store for a new debate. Clears all events and agent positions. Cancels a running clock.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -225,6 +248,19 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         result = await store.catch_up(arguments["agent_id"])
     elif name == "debate_status":
         result = await store.status()
+        result["clock"] = clock.snapshot()
+    elif name == "debate_start_clock":
+        duration = arguments.get("duration_seconds")
+        if duration is None and arguments.get("duration_minutes") is not None:
+            duration = float(arguments["duration_minutes"]) * 60.0
+        if duration is None:
+            result = {
+                "success": False,
+                "error": "duration_required",
+                "detail": "Pass duration_seconds or duration_minutes.",
+            }
+        else:
+            result = await clock.start(duration)
     elif name == "debate_dump_markdown":
         result = await store.dump_markdown(arguments["output_path"])
     elif name == "debate_set_final_position":
@@ -234,6 +270,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     elif name == "debate_set_verdict":
         result = await store.set_verdict(arguments["markdown"])
     elif name == "debate_reset":
+        await clock.cancel()
         limit = arguments.get("per_agent_event_limit", 200)
         result = await store.reset(limit)
     elif name == "debate_visualize":

@@ -2,14 +2,16 @@
 
 import json
 import pytest
-from debate_event_store.server import call_tool, store
+from debate_event_store.server import call_tool, clock, store
 
 
 @pytest.fixture(autouse=True)
 async def reset_store():
     """Reset the global store before each test."""
+    await clock.cancel()
     await store.reset(200)
     yield
+    await clock.cancel()
 
 
 @pytest.mark.asyncio
