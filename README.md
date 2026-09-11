@@ -22,6 +22,7 @@ The 6-agent live debate is still here. These changes make it cheaper to use, eas
 | **Clock in the store** | The timer was an LLM that slept. Cheap models skipped the sleeps. | The skill starts `debate_start_clock`. You do not spawn a timer agent. |
 | **Research scale** | A 6-agent show is too much for "go deep". | `/debate-battle:debate scale=research Go deep: should we ship X?` |
 | **Findings file** | People copied the answer out of chat. There was no flag they missed. | Default on. Look for `Saved to: debate-workspace/findings/YYYYMMDD - slug-n.md`. Say `write_findings=false` to skip. |
+| **OpenCode** | The plugin was Claude Code only. | From a clone: `opencode`. Pin cheap models in `opencode.json` if you want. |
 
 Short notes on why each change was made live in [`docs/decisions/`](docs/decisions/).
 
@@ -33,6 +34,8 @@ Disagreement has to be structural, not prompted. An empiricist and a rationalist
 
 ## Install
 
+### Claude Code
+
 Inside Claude Code:
 
 ```
@@ -41,6 +44,22 @@ Inside Claude Code:
 ```
 
 Requires [uv](https://docs.astral.sh/uv/) on your PATH. The plugin registers the bundled MCP event store automatically; the web UI ships pre-built, no Node toolchain needed.
+
+### OpenCode
+
+**Purpose.** Run the same skills outside Claude Code, including on cheaper or local models.
+
+**Implementation.** `opencode.json` starts the event store as a local MCP server named `debate-events`. `.opencode/skills/` symlinks to `skills/` so OpenCode can load them. Named subagents `debate-worker`, `debate-research`, and `debate-editor` are hidden; pin cheap models on the first two in `opencode.json` if you want. Spawn notes are in `skills/*/hosts/opencode.md`. The Claude plugin files are unchanged.
+
+**How to use.** From a clone of this repo, with `uv` on your PATH:
+
+```
+opencode
+```
+
+Then ask for a cross-check, a lean review, or a debate. Say `scale=research` if you want the small roster. Open http://127.0.0.1:8770 for a live debate.
+
+If MCP tools show up as `debate-events_debate_publish`, use those names. Do not pass `model: "sonnet"`.
 
 You get three skills:
 
@@ -231,7 +250,7 @@ The store is in-memory, single-process, behind one asyncio lock. Debates produce
 |---|---|
 | `skills/debate/` | The full-battle orchestrator. This is the product; the store is plumbing |
 | `skills/debate/prompts/` | Host-agnostic agent briefs. `SKILL.md` reads these and fills them. |
-| `skills/debate/hosts/` | Spawn recipes. Claude Code is the current host. |
+| `skills/debate/hosts/` | Spawn recipes per host. Claude and OpenCode are both documented. |
 | `skills/lean/` | The lean adversarial-review pipeline |
 | `skills/cross-check/` | Pressure-test a position the user already has |
 | `docs/decisions/` | Short notes on why a change was made |
@@ -244,7 +263,7 @@ The store is in-memory, single-process, behind one asyncio lock. Debates produce
 
 **Purpose.** Keep agent briefs free of Claude `Task` calls so another host can reuse them.
 
-**Implementation.** Each skill folder has `prompts/` (the briefs) and `hosts/` (how to spawn). `SKILL.md` still runs the phases. It reads the prompt files and fills `{placeholders}`. Claude spawn recipes live in `hosts/claude.md`.
+**Implementation.** Each skill folder has `prompts/` (the briefs) and `hosts/` (how to spawn). `SKILL.md` still runs the phases. It reads the prompt files and fills `{placeholders}`. Claude spawn recipes live in `hosts/claude.md`. OpenCode spawn recipes live in `hosts/opencode.md`.
 
 **How to use.** Do not paste a shorter brief. Read the file named in `SKILL.md` and send that text to the sub-agent.
 
